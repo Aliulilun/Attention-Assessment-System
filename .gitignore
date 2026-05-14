@@ -1,0 +1,22 @@
+# =========================
+# Ignore everything first
+# =========================
+*
+
+# =========================
+# But allow Git to enter folders
+# This is important, otherwise Git cannot find best.pt / last.pt inside subfolders
+# =========================
+!*/
+
+# =========================
+# Keep trained YOLO model weights only
+# =========================
+!**/best.pt
+!**/last.pt
+
+# =========================
+# Keep basic repo files
+# =========================
+!.gitignore
+!README.md
