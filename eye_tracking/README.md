@@ -37,9 +37,6 @@ eye_tracking/
 ├── test_stage*.py                     # 各階段的獨立測試腳本
 │
 └── 文檔/                              # 專案文檔
-    ├── STAGE3_OFFICIAL_FIX.md        # Stage 3 修正說明
-    ├── PROCESS_VIDEO.md              # 影片處理文檔
-    └── MODIFICATION_SUMMARY.md       # 修改歷史記錄
 ```
 
 ## 五個階段說明
