@@ -1,0 +1,55 @@
+# 視線估計系統依賴套件
+# Gaze Estimation System Requirements
+
+# ==================== 基礎套件 ====================
+numpy>=1.19.0
+opencv-python>=4.5.0
+Pillow>=8.0.0
+
+# ==================== MediaPipe 人臉檢測 ====================
+# 用於第一階段：人臉檢測與特徵點定位
+mediapipe>=0.10.0
+
+# ==================== YOLO 目標檢測 ====================
+# 用於第一階段：幼兒臉部初步定位
+ultralytics>=8.0.0
+
+# ==================== PyTorch ====================
+# 用於第四階段：神經網絡推理
+# 注意：根據你的系統選擇合適的版本
+torch>=1.9.0
+torchvision>=0.10.0
+
+# 如果使用 GPU (CUDA)，請訪問 https://pytorch.org/ 安裝對應版本
+# 例如：pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# ==================== 可視化 ====================
+matplotlib>=3.3.0
+
+# ==================== 配置文件處理 ====================
+pyyaml>=5.4.0
+
+# ==================== 數據處理與分析 ====================
+pandas>=1.3.0
+tqdm>=4.60.0
+
+# ==================== 科學計算 ====================
+# 用於第二階段：頭部姿態估計（Rotation 模組）
+scipy>=1.7.0
+
+# ==================== 開發工具（可選）====================
+# jupyter>=1.0.0
+# ipython>=7.20.0
+
+# ==================== 安裝說明 ====================
+# 基本安裝：
+#   pip install -r requirements.txt
+#
+# 如果使用 Apple Silicon (M1/M2/M3) Mac：
+#   1. 確保使用 Python 3.8+ 的 ARM64 版本
+#   2. PyTorch 會自動支援 MPS (Metal Performance Shaders)
+#
+# 如果使用 NVIDIA GPU：
+#   1. 確保已安裝 CUDA 和 cuDNN
+#   2. 訪問 https://pytorch.org/ 安裝對應 CUDA 版本的 PyTorch
+

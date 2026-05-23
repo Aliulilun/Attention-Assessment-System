@@ -1,0 +1,78 @@
+# 集中管理視線估計系統配置文件
+# Gaze Estimation System Configuration
+
+# ==================== 人臉檢測配置 ====================
+face_detection:
+  # MediaPipe 和 YOLO 配置（對應 test_stage1/2/3/4.py）
+  min_confidence: 0.3          # MediaPipe 最小檢測置信度（test 文件使用 0.3）
+  yolo_conf: 0.4               # YOLO 檢測閾值
+  yolo_model_path: "models/nano.pt"  # YOLO 模型路徑
+  face_landmarker_task: "models/face_landmarker.task"  # MediaPipe Tasks 模型
+  crop_padding_ratio: 0.2      # ROI 動態填充比例
+  target_center_w: 1600        # 中央裁切寬度
+  target_center_h: 960         # 中央裁切高度
+  
+  # 傳統配置（保留用於參考）
+  max_num_faces: 1             # 最大檢測人臉數量
+  model_selection: 1           # 0: 近距離模型 (2m內), 1: 全距離模型 (5m內)
+  refine_landmarks: true       # 是否精細化眼睛和嘴唇的特徵點
+  
+  # ETH-XGaze 6 點索引（對應 test 文件）
+  # 左眼外角, 左眼內角, 右眼內角, 右眼外角, 左嘴角, 右嘴角
+  key_landmarks_indices: [33, 133, 362, 263, 61, 291]
+
+# ==================== 頭部姿態估計配置 ====================
+head_pose:
+  face_model_path: "models/face_model_ethxgaze.txt"  # 3D 人臉模型文件 (6點模型)
+  use_iterative: true          # 是否使用迭代優化 solvePnP
+  method: "SOLVEPNP_ITERATIVE" # solvePnP 方法: ITERATIVE, EPNP, P3P
+
+# ==================== 圖像正規化配置 ====================
+normalization:
+  face_model_path: "models/face_model_ethxgaze.txt"  # 3D 人臉模型文件 (與 Stage 2 相同)
+  focal_length: 960            # 虛擬相機焦距 (像素) - 對應 focal_norm
+  distance: 60                 # 標準化距離 (cm) - 對應 distance_norm
+  output_size: [224, 224]      # 輸出圖像尺寸 (寬, 高)
+
+# ==================== 神經網絡模型配置 ====================
+model:
+  model_path: "models/epoch_24_ckpt.pth.tar"  # 預訓練模型路徑（對應 test 文件）
+  checkpoint_path: "models/epoch_24_ckpt.pth.tar"  # 別名，與 model_path 相同
+  use_gpu: true                # 使用 GPU（對應 test_stage4.py, test_gaze_arrow.py）
+  device: "cpu"                # 如果 use_gpu 為 false 或無 GPU 時使用 CPU
+  input_size: [224, 224]       # 模型輸入尺寸
+  
+  # ImageNet 標準化參數
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
+
+# ==================== 相機配置 ====================
+camera:
+  # 如果沒有相機校正文件，使用以下默認參數
+  use_default_intrinsics: true
+  default_focal_length_factor: 1.0  # 焦距 = 圖像寬度 * 此係數
+  
+  # 可選：相機校正文件路徑 (.xml 格式)
+  calibration_file: null
+
+# ==================== 輸出配置 ====================
+output:
+  save_visualization: true     # 是否保存可視化結果
+  save_dir: "output/results"   # 輸出目錄
+  show_plot: true              # 是否顯示結果圖像
+  save_intermediate: false     # 是否保存中間階段結果
+  
+  # 繪圖配置
+  visualization:
+    gaze_arrow_length: 100     # 視線箭頭長度 (像素)
+    gaze_arrow_color: [0, 0, 255]  # 視線箭頭顏色 (BGR)
+    gaze_arrow_thickness: 3    # 箭頭粗細
+    landmark_color: [0, 255, 0]     # 特徵點顏色 (BGR)
+    landmark_radius: 2         # 特徵點半徑
+
+# ==================== 調試配置 ====================
+debug:
+  verbose: true                # 是否打印詳細信息
+  print_timings: true          # 是否打印各階段耗時
+  save_debug_images: false     # 是否保存調試圖像
+

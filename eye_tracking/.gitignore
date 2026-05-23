@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# 輸出文件
+output/
+*.jpg
+*.png
+*.mp4
+*.avi
+
+# 模型文件（太大，不適合 git）
+models/*.pth
+models/*.tar
+models/*.pt
+models/*.onnx
+
+# 但保留 face model
+!models/face_model*.txt
+
+# 測試圖片（根據需要調整）
+test_images/*.jpg
+test_images/*.png
+
+# 日誌
+*.log
+
+# 臨時文件
+temp/
+tmp/
+
