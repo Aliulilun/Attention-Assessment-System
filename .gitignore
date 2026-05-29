@@ -1,0 +1,9 @@
+.venv/
+.venv314/
+__pycache__/
+*.pyc
+
+output/
+video/
+
+.DS_Store
