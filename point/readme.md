@@ -1,92 +1,97 @@
-# 🤖 兒童注意力與手勢互動影音整合分析系統
+# 兒童注意力與手勢互動影音整合分析系統
+**(Child Attention & Interaction Vision-Audio Analysis System)**
 
-**(Child Attention & Interaction Vision-Audio Analysis System v20)**
+![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)
+![YOLO](https://img.shields.io/badge/YOLO-v11-orange)
+![MediaPipe](https://img.shields.io/badge/MediaPipe-Hands-green)
+![Whisper](https://img.shields.io/badge/OpenAI-Whisper-black)
 
-## 📝 專案簡介
-
-本系統為一套針對兒童行為評估所開發的**多模態 (Multi-modal) AI 分析引擎**。系統整合了 **Whisper 語音辨識**與**多重電腦視覺模型 (YOLOv11-Pose, MediaPipe)**，能夠自動化化解析臨床測驗影片。
-
-系統會先透過語音辨識精準抓取「關鍵字指令」並設定評估視窗，隨後無縫接軌進入視覺分析。視覺核心能自動追蹤測驗牌卡階段、劃分施測者與兒童的互動區域，並計算 3D 空間指向向量（包含人類與實體機器人），最終生成帶有視覺特效與計分數據的完整分析影片。
-
----
-
-## ✨ 核心模組與技術亮點
-
-### 🎙️ 第一階段：AI 語音觸發快取機制 (Voice Trigger & Caching)
-
-* **Whisper Large-v3 整合**：利用 OpenAI Whisper 模型掃描影片音軌，精準辨識如「開始」、「321」、「準備囉」等指令關鍵字。
-* **動態判定視窗**：偵測到關鍵字後，系統會自動在後續 3 秒內啟動「高靈敏判定視窗」，並將辨識結果快取為 `.txt` 逐字稿，大幅節省重複執行的運算時間。
-
-### 🎴 視覺核心 1：牌卡動態追蹤與階段切換 (Dynamic Tracking)
-
-* **兩段式降級搜索策略 (Two-Stage Fallback)**：系統會即時追蹤桌面上的測驗階段字卡（Template Matching）。若遭遇牌卡切換導致短暫丟失（Lost Patience > 10），系統會自動將追蹤框**重置回使用者最初框選的完美大小**，並將搜索網向外擴展至 250px，確保無縫接軌至下一階段。
-
-### 🧑‍🤝‍🧑 視覺核心 2：楚河漢界身分與手勢意圖分析 (Identity & Intent Analysis)
-
-* **雙重骨架協作**：結合 YOLOv11-Pose (宏觀身體定位) 與 MediaPipe Hands (微觀手指關節)，透過 `calculate_arm_link_score` 演算法，徹底解決手部交錯時的身分誤判問題。
-* **物理防呆機制**：嚴格區分「遠距共同注意力 (指向)」與「近距把玩干擾 (觸摸)」。當手部特徵點落入目標物 Bounding Box 時，系統會強制觸發 `TOUCH_WARN` 忽略計分。
-
-### 🤖 視覺核心 3：機器人平滑指向判定 (Robot Pointing Stabilization)
-
-* 針對測驗「第八階段」的機器人互動，系統會自動切換至定製訓練的 YOLO 單點關鍵點模型 (`robot_point_model.pt`)。
-* 導入 **SMA 滑動平均演算法 (Simple Moving Average Buffer)**，動態過濾 AI 座標預測的閃爍雜訊，使機器人生成的指向射線如實體雷射筆一般穩定精確。
+本專案為針對兒童行為評估（共同注意力 Joint Attention）所開發的**多模態 (Multi-modal) AI 影音分析引擎**。系統整合了 OpenAI Whisper 語音辨識與多重電腦視覺模型，能夠自動化解析臨床測驗影片，精準擷取受測者與機器人的空間互動意圖，並產出量化數據與視覺化影片。
 
 ---
 
-## 📂 資料夾結構與檔案準備 (Project Structure)
+## 核心技術與功能亮點
 
-請確保您的專案目錄符合以下結構，以便系統順利載入模型與素材：
+### 1. AI 語音觸發與快取機制 (Voice Trigger & Caching)
+* 整合 **OpenAI Whisper Large-v3** 模型，精準辨識影片音軌中的關鍵字指令（如「開始」、「321」、「準備囉」）。
+* **動態判定視窗**：偵測到關鍵字後，系統自動開啟 3 秒的高靈敏判定視窗。並具備 `.txt` 逐字稿快取功能，大幅降低重複測試時的運算成本。
+
+### 2. 牌卡動態追蹤與防呆切換 (Dynamic Stage Tracking)
+* 透過 OpenCV 樣板比對即時追蹤桌面測驗字卡，判斷測驗階段 (Stage 1~8)。
+* **兩段式降級搜索策略**：當牌卡因人為切換短暫丟失時，系統會自動重置為初始完美比例 BBox，並將搜索網向外擴展至 250px，徹底解決追蹤卡死陷阱。
+
+### 3. 楚河漢界身分與意圖過濾 (Identity & Intent Analysis)
+* 結合 **YOLOv11-Pose** (宏觀骨架定位) 與 **MediaPipe Hands** (微觀手指關節)。
+* 獨創「手臂距離分數演算法 (Arm Link Score)」，解決雙手交錯時的身分誤判。
+* **物理防呆機制**：嚴格區分「遠距指向」與「近距把玩」。若手部特徵點落入目標物外框內，系統會強制標記為 `TOUCH_WARN` 並忽略計分，萃取最純粹的注意力數據。
+
+### 4. 機器人平滑指向判定 (Robot Pointing Stabilization)
+* 針對測驗第八階段，自動切換至定製訓練的 **YOLO 單關鍵點模型** (`robot_point_model.pt`)。
+* 導入 **SMA 滑動平均演算法 (Simple Moving Average Buffer)**，動態過濾 AI 單幀預測的座標雜訊，使機器人射線如實體雷射筆般穩定精確。
+
+---
+
+## 資料夾結構 (Project Structure)
+
+請確保在執行前，專案目錄包含以下必要檔案：
 
 ```text
 Project_Root/
 │
-├── main.py                  # 本系統主程式碼 (v20 整合版)
+├── main.py                  # 系統主程式 (語音+視覺整合版)
+├── environment.yml          # Anaconda 虛擬環境配置檔
+├── ffmpeg.exe               # 影音處理與聲音縫合核心工具
 ├── video/
-│   └── 9.mp4                # 欲分析的原始測試影片 (需包含音軌)
+│   └── 9.mp4                # 欲分析的原始測試影片 (需含音軌)
 ├── sample/
-│   ├── 1.jpg ... 8.jpg      # 階段辨識字卡樣板 (建議清晰無反光)
+│   ├── 1.jpg ... 8.jpg      # 各階段辨識字卡樣板圖
 ├── model/
-│   ├── front_model.pt       # 前景物件辨識權重
-│   ├── background_model.pt  # 背景物件辨識權重
-│   ├── balloon_model.pt     # 氣球辨識權重
-│   ├── bubble_model.pt      # 泡泡辨識權重
-│   ├── toy_model.pt         # 玩具辨識權重
-│   └── robot_point_model.pt # 🤖 機器人專屬指向辨識權重
-└── output/                  # 系統自動生成的產出資料夾
-    ├── output_result_v20.mp4       # 純視覺分析影片 (無聲)
-    ├── transcript_with_events_v20.txt  # 語音辨識快取逐字稿
-    └── output_with_audio_v20.mp4   # 🎉 最終影音縫合完成版
+│   ├── front_model.pt       # 前景物件辨識模型
+│   ├── background_model.pt  # 背景物件辨識模型
+│   ├── balloon_model.pt     # 氣球辨識模型
+│   ├── bubble_model.pt      # 泡泡辨識模型
+│   ├── toy_model.pt         # 玩具辨識模型
+│   └── robot_point_model.pt # 機器人專屬指向模型
+└── output/                  # 系統自動生成的產出目錄 (執行後產生)
 
 ```
 
 ---
 
-## 🚀 執行指南 (How to Run)
+## 環境安裝與執行指南 (Installation & Usage)
 
-### 1. 安裝系統依賴 (Requirements)
+### 1. 建立虛擬環境與安裝套件
 
-請使用 Python 3.8 或以上版本，並安裝必要的運算與影音處理套件：
+本專案提供完整的 environment.yml，可一鍵還原包含 Python 3.9、YOLO、MediaPipe 及 Whisper 等所有依賴的開發環境：
 
 ```bash
-pip install numpy opencv-python mediapipe ultralytics pillow moviepy openai-whisper
+# 複製專案到本地
+git clone (https://github.com/Aliulilun/Attention-Assessment-System.git)
+# 複製專案到本地
+cd Attention-Assessment-System
+
+# 透過 environment.yml 一鍵建立並配置虛擬環境
+conda env create -f environment.yml
+
+# 啟動虛擬環境 (預設名稱為 mediapipe_py39，若有修改請依照 yml 內的 name 啟動)
+conda activate mediapipe_py39
 
 ```
 
-*(註：首次執行時，系統會自動下載 Whisper 大型模型與 YOLOv11-Pose 預訓練模型，需保持網路連線。)*
+*(註：首次執行時，系統會自動自網路下載 Whisper 大型模型與 YOLOv11-Pose 預訓練模型，請保持網路連線。)*
 
-### 2. 啟動系統與框選目標 (Execution & ROI Selection)
+### 2. 啟動系統
 
 ```bash
 python main.py
 
 ```
 
-程式啟動後，將依序執行：
+### 3. 操作流程
 
-* **階段一：** 若無快取，系統會先花費數分鐘解析整部影片的語音，並生成 `transcript.txt`。
-* **階段二：** 語音解析完成後，會彈出視窗並暫停於影片第一幀。請使用滑鼠**精準框選桌上的「階段 1 字卡」**，完成後按下 `Enter` 或空白鍵。
-* **階段三：** 系統進入全幀視覺分析主迴圈。
+1. **語音解析**：若為首次執行該影片，系統會先解析語音並建立快取檔案。
+2. **框選基準點**：語音解析完畢後，畫面會暫停於第一幀。請使用滑鼠**精準框選桌上的「階段 1 字卡」**，框選完成後按下 `Enter` 鍵。
+3. **自動分析**：系統將進入全幀視覺分析主迴圈。分析完成後，程式會透過 MoviePy 與 FFmpeg 自動將結果影像與原始音軌進行縫合。
+4. **取得結果**：最終帶有視覺化骨架、射線與特效的完整影片將輸出於 `output/output_with_audio.mp4`。
 
-### 3. 查看最終結果 (Output)
-
-分析完成後，系統會在終端機印出各階段的計分統計表，並透過 MoviePy 將原始聲音與帶有視覺化骨架、射線、判定文字的影片進行最終縫合，存入 `output` 資料夾中。
+---
