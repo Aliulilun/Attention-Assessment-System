@@ -1,0 +1,5 @@
+# Whisper 本體
+openai-whisper
+
+# 方便後續若要自行抽音訊或串接 ffmpeg 流程
+ffmpeg-python

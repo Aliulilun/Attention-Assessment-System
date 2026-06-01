@@ -42,9 +42,6 @@ eye_tracking/
 ├── test_stage*.py                     # 各階段的獨立測試腳本
 │
 └── 文檔/                              # 專案文檔
-    ├── STAGE3_OFFICIAL_FIX.md        # Stage 3 修正說明
-    ├── PROCESS_VIDEO.md              # 影片處理文檔
-    └── MODIFICATION_SUMMARY.md       # 修改歷史記錄
 ```
 
 ## 五個階段說明
@@ -531,11 +528,6 @@ detector = FaceDetector(config={'min_confidence': 0.3})  # 默認 0.5
 根據 ETH-XGaze 論文，模型在測試集上的誤差約為：
 - **Within-dataset**: 3.5° - 4.5°
 - **Cross-dataset**: 5.0° - 7.0°
-
-**改善方法**:
-1. **個人校準**: 收集你看向 9 個已知點的數據，計算偏差矩陣
-2. **確保圖像質量**: 光線充足、人臉清晰、無遮擋
-3. **檢查正規化**: 使用 `test_stage3.py` 查看正規化後的圖像
 
 ---
 
