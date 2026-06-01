@@ -113,7 +113,6 @@
 | `eye_tracking` | 頭部姿態估計 | OpenCV solvePnP |
 | `point` | 骨架/手勢偵測 | YOLOv11-Pose + MediaPipe Hands |
 | `point` | 物件偵測 | 客製化 YOLO 模型群 |
-| `point` | 語音觸發 | OpenAI Whisper large-v3 |
 | `speech recognition` | 語音轉文字 | OpenAI Whisper large-v3 |
 
 ---
