@@ -388,8 +388,8 @@ python audio_trigger_pipeline.py --help
 |------|------|----------|
 | B1109240 | 劉立綸 | 視線估計模組（eye_tracking）|
 | B1229059 | 黃璿軒 | 手勢互動分析模組（point）|
-| B1229011 | 李瑋恆 | 相關yolo模型|
-| B1229056 | 黃昱翔 | 協助語音辨識模組（speech recognition）|
+| B1229011 | 李瑋恆 | 訓練相關yolo模型（yolo models）|
+| B1229056 | 黃昱翔 | 協助修改語音辨識模組（speech recognition）|
 
 
 ---
