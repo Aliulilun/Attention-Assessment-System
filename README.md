@@ -265,7 +265,7 @@ chmod +x setup_audio_env.sh
 
 ## 7. 模組測試指引 (Module Testing Guide)
 
-> ⚠️ **重要提示**：目前三個子模組（`eye_tracking`、`point`、`speech recognition`）**尚未完整整合為單一系統**，各模組目前為獨立開發的 Side Project。若要測試，請依照以下說明**個別進入各子模組目錄進行測試**。 近期會盡快將各個Side Project整合再一起。
+> ⚠️ **重要提示**：目前三個子模組（`eye_tracking`、`point`、`speech recognition`）**尚未完整整合為單一系統**，各模組目前為獨立開發的 Side Project。若要測試，請依照以下說明**個別進入各子模組目錄進行測試**。 近期會盡快將各個Side Project整合再一起。且由於目前研究影片有個資問題，因此尚未上傳可測試影片檔，若有測試影片需求，目前應自行上傳測試影片，敬請見諒，本團隊日後將快速補上可測試影片。
 
 ---
 
