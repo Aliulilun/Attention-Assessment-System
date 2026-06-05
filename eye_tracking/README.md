@@ -28,8 +28,13 @@ eye_tracking/
 │   └── camera_utils.py               # 相機參數處理
 │
 ├── models/                            # 模型文件
-│   ├── epoch_24_ckpt.pth.tar         # ETH-XGaze 預訓練模型（ResNet-50）
+│   ├── nano.pt                       # ⚠️ YOLO nano 模型（需從 Releases 下載）
+│   ├── face_landmarker.task          # ⚠️ MediaPipe 模型（需從 Releases 下載）
+│   ├── epoch_24_ckpt.pth.tar         # ⚠️ ETH-XGaze 預訓練模型（需從 Releases 下載）
 │   └── face_model_ethxgaze.txt       # 3D 人臉模型（6 點，單位：cm）
+│   
+│   ⚠️ 提醒：前三個模型文件因檔案大小限制未包含在 Git 倉庫中
+│              請前往 GitHub Releases 下載 "model-release" 並放置於 models/ 目錄
 │
 ├── test_images/                       # 測試圖片
 │   └── (放置你的測試圖片)
@@ -273,26 +278,51 @@ R_head, tvec（頭部在相機座標系）
 pip install -r requirements.txt
 ```
 
-### 2. 下載預訓練模型
+### 2. 下載預訓練模型（必須！）
 
-ETH-XGaze 預訓練模型 `epoch_24_ckpt.pth.tar` 應該已經放在 `models/` 目錄中。
+**⚠️ 重要提醒**：以下三個模型文件因檔案大小限制**未包含在 Git 倉庫中**，必須手動下載：
 
-如果沒有，請從 [ETH-XGaze GitHub](https://github.com/xucong-zhang/ETH-XGaze) 下載。
+####  從 GitHub Releases 下載
 
-### 3. 準備模型文件
+1. 前往本專案的 GitHub Releases 頁面：
+   ```
+   https://github.com/Aliulilun/Attention-Assessment-System/releases
+   ```
 
-確保以下模型文件已放置在 `models/` 目錄：
+2. 找到 **"model-release"** 版本
 
-- `nano.pt` - YOLO nano 模型（用於頭部檢測）
-- `face_landmarker.task` - MediaPipe Face Landmarker 模型（自動下載）
-- `face_model_ethxgaze.txt` - ETH-XGaze 6 點 3D 人臉模型
-- `epoch_24_ckpt.pth.tar` - ETH-XGaze 預訓練視線估計模型
+3. 下載以下三個模型文件：
+   - `nano.pt` (約 6 MB) - YOLO nano 頭部檢測模型
+   - `face_landmarker.task` (約 25 MB) - MediaPipe 特徵點提取模型
+   - `epoch_24_ckpt.pth.tar` (約 102 MB) - ETH-XGaze 視線估計模型
 
-MediaPipe 模型會在首次運行時自動下載。
+4. 將下載的模型文件放置於專案的 `models/` 目錄下
+
+####  最終 models/ 目錄結構
+
+下載完成後，`models/` 目錄應包含以下文件：
+
+```
+models/
+├── nano.pt                       # YOLO nano 模型（從 Releases 下載）
+├── face_landmarker.task          # MediaPipe 模型（從 Releases 下載）
+├── epoch_24_ckpt.pth.tar         # ETH-XGaze 預訓練模型（從 Releases 下載）
+└── face_model_ethxgaze.txt       # 3D 人臉模型（已包含在倉庫中）
+```
+
+### 3. 驗證模型文件
+
+使用以下指令檢查模型文件是否正確放置：
+
+```bash
+ls -lh models/
+```
+
+你應該看到四個文件，總大小約 133 MB。
 
 ## 使用方法
 
-### 🎬 方法 1: 影片處理（推薦用於研究和分析）
+###  方法 1: 影片處理（推薦用於研究和分析）
 
 **使用 `process_video.py`** - 完整的視線追蹤管線，支援輸出影片和 CSV 數據
 
