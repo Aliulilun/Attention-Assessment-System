@@ -2,14 +2,12 @@ import os
 import sys
 import numpy as np
 import re
-from collections import deque 
 
 # ==========================================
 # ★★★ 第一區：系統與模型路徑設定 ★★★
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-VIDEO_FILE_PATH = os.path.join(BASE_DIR, 'video', '9.mp4') 
-SAMPLE_DIR = os.path.join(BASE_DIR, 'sample') 
+VIDEO_FILE_PATH = os.path.join(BASE_DIR, 'video', '10.mp4') 
 
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output') 
 if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR) 
@@ -24,8 +22,6 @@ MODEL_TOY_PATH = os.path.join(BASE_DIR, 'model', 'toy_model.pt')
 MODEL_POSE_PATH = 'yolo11n-pose.pt'
 
 MODEL_ROBOT_POINT_PATH = os.path.join(BASE_DIR, 'model', 'robot_point_model.pt')
-
-REF_IMGS = {str(i): os.path.join(SAMPLE_DIR, f'{i}.jpg') for i in range(1, 9)}
 
 STAGE_LEVELS = {
     "準備中": 0, "第一部分": 1, "第二部分": 2, "第三部分": 3,
@@ -51,8 +47,9 @@ CONF_BACKGROUND = 0.35
 CONF_BALLOON = 0.50      
 CONF_BUBBLE = 0.35           
 CONF_TOY = 0.40          
-CONF_POSE = 0.50             
+CONF_POSE = 0.50            
 
+# 機器人專屬黃金參數 (同步自單獨測試版)
 CONF_ROBOT = 0.60
 IOU_ROBOT = 0.50
 
@@ -76,20 +73,6 @@ C_RAY_TESTER = (0, 165, 255)
 C_TOUCH_WARN = (0, 0, 255)    
 
 # ==========================================
-#  機器人平滑穩定機制 (SMA Buffer) 
-# ==========================================
-SMOOTHING_FRAMES = 5
-robot_base_buffer = deque(maxlen=SMOOTHING_FRAMES)
-robot_tip_buffer = deque(maxlen=SMOOTHING_FRAMES)
-
-def get_smoothed_point(buffer):
-    valid_points = [pt for pt in buffer if pt is not None]
-    if not valid_points: return None
-    avg_x = int(sum([pt[0] for pt in valid_points]) / len(valid_points))
-    avg_y = int(sum([pt[1] for pt in valid_points]) / len(valid_points))
-    return (avg_x, avg_y)
-
-# ==========================================
 #  [第一階段] Whisper 語音快取機制 
 # ==========================================
 print(f"--- 系統啟動中 ---")
@@ -100,7 +83,7 @@ if os.path.exists(TRANSCRIPT_PATH):
     print(f"\n 發現快取語音紀錄檔 ({TRANSCRIPT_PATH})，瞬間載入！")
     with open(TRANSCRIPT_PATH, "r", encoding="utf-8") as f:
         for line in f:
-            if "已啟動" in line and "的專屬判定視窗" in line:
+            if "進度條啟動" in line or ("已啟動" in line and "的專屬判定視窗" in line):
                 nums = re.findall(r"\d+\.\d+", line)
                 if len(nums) >= 2: trigger_windows.append((float(nums[0]), float(nums[1])))
 else:
@@ -139,15 +122,9 @@ try:
     import mediapipe as mp
     from PIL import Image, ImageDraw, ImageFont
     from ultralytics import YOLO
+    import easyocr  
     import traceback
 except ImportError as e: sys.exit(f" 視覺套件載入失敗: {e}")
-
-def imread_chinese(path):
-    if os.path.exists(path): return cv2.imdecode(np.fromfile(path, dtype=np.uint8), 0) 
-    return None
-
-templates = {key: imread_chinese(path) for key, path in REF_IMGS.items() if imread_chinese(path) is not None}
-if not templates: sys.exit(" 錯誤：找不到任何字卡樣板！")
 
 mp_hands = mp.solutions.hands
 
@@ -162,6 +139,9 @@ try:
     model_robot_point = YOLO(MODEL_ROBOT_POINT_PATH)
 except Exception as e: sys.exit(f"YOLO 載入失敗: {e}")
 
+print("\n>>> 正在喚醒 EasyOCR 牌卡辨識引擎...")
+ocr_reader = easyocr.Reader(['en'], gpu=True)
+
 cap = cv2.VideoCapture(VIDEO_FILE_PATH)
 success, first_frame = cap.read()
 if not success: sys.exit("無法讀取影片")
@@ -170,17 +150,6 @@ FRAME_H, FRAME_W = first_frame.shape[:2]
 FRAME_FPS = cap.get(cv2.CAP_PROP_FPS) 
 BOTTOM_LIMIT_Y = int(FRAME_H * BOTTOM_LIMIT_RATIO); TOY_TOP_LIMIT_Y = int(FRAME_H * TOY_TOP_LIMIT_RATIO) 
 FACE_EXCLUSION_RADIUS = int(FRAME_H * FACE_EXCLUSION_RATIO); DIVIDER_X = int(FRAME_W * AUTO_ROI_START_RATIO)
-
-def smart_match_gray(roi, tmpl_gray):
-    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    found = None; (tH, tW) = tmpl_gray.shape[:2]
-    for scale in np.linspace(0.6, 1.2, 8): 
-        resized_w, resized_h = int(tW * scale), int(tH * scale)
-        if resized_h > roi_gray.shape[0] or resized_w > roi_gray.shape[1]: continue
-        result = cv2.matchTemplate(roi_gray, cv2.resize(tmpl_gray, (resized_w, resized_h)), cv2.TM_CCOEFF_NORMED)
-        (_, maxVal, _, maxLoc) = cv2.minMaxLoc(result)
-        if found is None or maxVal > found[0]: found = (maxVal, maxLoc, scale, resized_w, resized_h)
-    return found if found else (0.0, (0,0), 1.0, 0, 0)
 
 def draw_chinese_text(img, text, position, text_color, text_size=30):
     try:
@@ -260,12 +229,14 @@ def calculate_arm_link_score(mp_wrist, kpts, confs, side="right"):
 tx, ty, tw, th = select_roi_native("STEP: Select Card 1", first_frame)
 if tw == 0: sys.exit()
 
-#  紀錄「最初的完美框大小」，防止迷失時框變形
 init_w, init_h = tw, th
 
 card_cx, card_cy, card_w, card_h = tx + tw // 2, ty + th // 2, tw, th
 smoothed_box = (tx, ty, tx+tw, ty+th)
 current_stage_num, current_stage, lost_patience = 1, "第一部分", 0
+
+# 新增計時機制：防止死死咬著雜訊不推進
+stay_frame_count = 0
 
 stage_data = { k: {"frames": 0, "point": 0} for k in STAGE_LEVELS.keys() if k != "準備中" }
 is_pointing_now = { k: False for k in STAGE_LEVELS.keys() }; pointing_log = []; last_logged_second = -1 
@@ -293,47 +264,110 @@ try:
             time_str = f"{int(current_time_sec//60):02d}:{int(current_time_sec%60):02d}"
             is_in_trigger_window = any(start <= current_time_sec <= end for start, end in trigger_windows)
 
-            # --- 1. 結界追蹤 ---
+            # --- 1. 結界追蹤 (推進優先級 OCR 演算法 + ★ 自動重置尺寸防禦) ---
             if frame_cnt % MATCH_INTERVAL == 0:
-                if lost_patience > 10: 
-                    # 找不到牌子，可能換牌子了。強制將方框重置回最初完美大小，並在周圍給予額外的搜索範圍
+                stay_frame_count += MATCH_INTERVAL
+                
+                # 防禦 A：如果卡在同一個號碼太久（如 45 影格），主動強制進入大範圍擴張搜索，防止死咬背景雜訊
+                if lost_patience > 10 or stay_frame_count > 45: 
                     card_w, card_h = init_w, init_h
-                    current_pad = 250 # 擴大至 250px 的額外範圍
+                    current_pad = 250 
+                    if stay_frame_count > 45:
+                        stay_frame_count = 0 # 重置計時器
                 else:
-                    # 平時正常追蹤，給予 60px 的範圍
                     current_pad = SEARCH_PAD 
 
                 sx1, sy1 = max(0, int(card_cx - card_w//2 - current_pad)), max(0, int(card_cy - card_h//2 - current_pad))
                 sx2, sy2 = min(FRAME_W, int(card_cx + card_w//2 + current_pad)), min(FRAME_H, int(card_cy + card_h//2 + current_pad))
                 crop = frame[sy1:sy2, sx1:sx2]
 
-                best_score = 0; best_key = None; best_info = None
-                for key, tmpl_gray in templates.items():
-                    if int(key) < current_stage_num: continue 
-                    if int(key) > current_stage_num + 2: continue 
-                    score, loc, scale, w_res, h_res = smart_match_gray(crop, tmpl_gray)
-                    if score > best_score: best_score = score; best_key = key; best_info = (loc, w_res, h_res)
-                
-                if best_score > MATCH_THRESHOLD:
+                ocr_results = ocr_reader.readtext(crop, allowlist='12345678')
+
+                best_progression_score = 0
+                best_progression_key = None
+                best_progression_info = None
+
+                best_stay_score = 0
+                best_stay_key = None
+                best_stay_info = None
+
+                for (bbox, text, prob) in ocr_results:
+                    if text.isdigit() and 1 <= int(text) <= 8:
+                        card_num = int(text)
+                        
+                        # 擷取當前 OCR 文字外框的寬高
+                        bx_min = min([pt[0] for pt in bbox])
+                        bx_max = max([pt[0] for pt in bbox])
+                        by_min = min([pt[1] for pt in bbox])
+                        by_max = max([pt[1] for pt in bbox])
+                        ocr_box_w = bx_max - bx_min
+                        ocr_box_h = by_max - by_min
+                        
+                        # ★ 防禦 B：形狀與尺寸異常檢測
+                        # 如果抓到的文字框大小與最初拉的完美框尺寸落差超過 1.5 倍或縮小到 0.4 倍以下
+                        # 代表這高機率是衣服皺褶、雜訊或手部陰影誤判！直接剔除。
+                        if (ocr_box_w > init_w * 1.5 or ocr_box_w < init_w * 0.4 or 
+                            ocr_box_h > init_h * 1.5 or ocr_box_h < init_h * 0.4):
+                            continue # 直接捨棄這個誤判雜訊
+                        
+                        if card_num < current_stage_num:
+                            continue 
+
+                        if card_num > current_stage_num:
+                            jump_step = card_num - current_stage_num
+                            required_conf = MATCH_THRESHOLD if jump_step <= 2 else 0.80
+                            
+                            if prob >= required_conf and prob > best_progression_score:
+                                best_progression_score = prob
+                                best_progression_key = text
+                                best_progression_info = bbox
+                        else:
+                            if prob >= MATCH_THRESHOLD and prob > best_stay_score:
+                                best_stay_score = prob
+                                best_stay_key = text
+                                best_stay_info = bbox
+
+                if best_progression_key is not None:
+                    final_score = best_progression_score
+                    final_key = best_progression_key
+                    final_info = best_progression_info
+                    stay_frame_count = 0 # 成功跳關，歸零計時器
+                else:
+                    final_score = best_stay_score
+                    final_key = best_stay_key
+                    final_info = best_stay_info
+
+                if final_key is not None:
                     lost_patience = 0 
-                    new_cx, new_cy = sx1 + best_info[0][0] + best_info[1]//2, sy1 + best_info[0][1] + best_info[2]//2
+                    
+                    bx_min = min([pt[0] for pt in final_info])
+                    bx_max = max([pt[0] for pt in final_info])
+                    by_min = min([pt[1] for pt in final_info])
+                    by_max = max([pt[1] for pt in final_info])
+                    
+                    b_w = bx_max - bx_min
+                    b_h = by_max - by_min
+                    
+                    new_cx = sx1 + bx_min + b_w / 2
+                    new_cy = sy1 + by_min + b_h / 2
+                    
                     card_cx = card_cx * (1 - ALPHA_SMOOTH) + new_cx * ALPHA_SMOOTH
                     card_cy = card_cy * (1 - ALPHA_SMOOTH) + new_cy * ALPHA_SMOOTH
-                    card_w, card_h = best_info[1], best_info[2]
+                    card_w, card_h = b_w, b_h
                     smoothed_box = (card_cx - card_w//2, card_cy - card_h//2, card_cx + card_w//2, card_cy + card_h//2)
                     
-                    if int(best_key) > current_stage_num:
-                        current_stage_num = int(best_key)
+                    if int(final_key) > current_stage_num:
+                        current_stage_num = int(final_key)
                         stage_map = {"1":"第一部分", "2":"第二部分", "3":"第三部分", "4":"第四部分", "5":"第五部分", "6":"第六部分", "7":"第七部分", "8":"第八部分"}
-                        current_stage = stage_map[best_key]
-                        print(f"[{time_str}] 階段推進: {current_stage} (分數:{best_score:.2f})")
+                        current_stage = stage_map[final_key]
+                        print(f"🔥 [{time_str}] 成功推進關卡 -> {current_stage} (OCR 信心度: {final_score:.2f})")
                 else: 
                     lost_patience += 1
 
             bx1, by1, bx2, by2 = map(int, smoothed_box)
             if lost_patience <= 15: 
                 cv2.rectangle(out_img, (bx1, by1), (bx2, by2), (0, 255, 0), 4, cv2.LINE_AA)
-                cv2.putText(out_img, "Tracking", (bx1, by1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 3)
+                cv2.putText(out_img, f"Tracking: {current_stage_num}", (bx1, by1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 3)
             elif lost_patience <= 30: 
                 cv2.rectangle(out_img, (bx1, by1), (bx2, by2), (0, 0, 255), 4, cv2.LINE_AA)
                 cv2.putText(out_img, "Waiting...", (bx1, by1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 3)
@@ -461,8 +495,6 @@ try:
 
             elif current_stage == "第八部分":
                 robot_results = model_robot_point(frame, conf=CONF_ROBOT, iou=IOU_ROBOT, verbose=False)
-                current_base = None
-                current_tip = None
                 
                 if robot_results and len(robot_results) > 0:
                     r = robot_results[0]
@@ -470,28 +502,21 @@ try:
                         boxes_r = r.boxes.xyxy.cpu().numpy()
                         kpts_r = r.keypoints.xy.cpu().numpy() 
                         
-                        if len(boxes_r) > 0:
-                            bx1, by1, bx2, by2 = boxes_r[0] 
-                            cx, cy = int((bx1 + bx2) / 2), int((by1 + by2) / 2)
+                        for i in range(len(boxes_r)):
+                            bx1, by1, bx2, by2 = boxes_r[i]
+                            cx = int((bx1 + bx2) / 2)
+                            cy = int((by1 + by2) / 2)
                             
-                            if len(kpts_r[0]) > 0:
-                                tx, ty = int(kpts_r[0][0][0]), int(kpts_r[0][0][1])
+                            if i < len(kpts_r) and len(kpts_r[i]) > 0:
+                                tx, ty = int(kpts_r[i][0][0]), int(kpts_r[i][0][1])
+                                
                                 if tx > 0 and ty > 0:
-                                    current_base, current_tip = (cx, cy), (tx, ty)
-
-                robot_base_buffer.append(current_base)
-                robot_tip_buffer.append(current_tip)
-
-                smooth_base = get_smoothed_point(robot_base_buffer)
-                smooth_tip = get_smoothed_point(robot_tip_buffer)
-
-                if smooth_base and smooth_tip:
-                    cv2.circle(out_img, smooth_base, 8, (0, 255, 255), -1) 
-                    cv2.circle(out_img, smooth_tip, 8, (0, 0, 255), -1)    
-                    
-                    hit, p1, p2 = check_pointing_ray_only(out_img, smooth_base, smooth_tip, [], mode="robot_pointing")
-                    if hit:
-                        tester_pointing_hits.append((p1, p2)) 
+                                    cv2.circle(out_img, (cx, cy), 6, (0, 255, 255), -1) 
+                                    cv2.circle(out_img, (tx, ty), 6, (0, 0, 255), -1) 
+                                    
+                                    hit, p1, p2 = check_pointing_ray_only(out_img, (cx, cy), (tx, ty), [], mode="robot_pointing")
+                                    if hit:
+                                        tester_pointing_hits.append((p1, p2))
 
             # ==========================================================
             # --- 4. 畫面渲染與計分 ---
@@ -507,7 +532,7 @@ try:
                         stage_data[current_stage]["point"] += 1; is_pointing_now[current_stage] = True 
                         current_sec_int = int(current_time_sec)
                         if current_sec_int != last_logged_second:
-                            print(f" [得分紀錄] {time_str} (第八部分) - 偵測到機器人平滑指向")  
+                            print(f" [得分紀錄] {time_str} (第八部分) - 偵測到機器人指向")  
                             last_logged_second = current_sec_int
                 else: is_pointing_now[current_stage] = False
             else:
