@@ -1,10 +1,31 @@
-.DS_Store
+# ==========================================
+# 早療所專案 - 語音辨識模組專用 Git 忽略設定 (.gitignore)
+# ==========================================
+
+# 1. 忽略 Python 本地虛擬環境（包含所有的套件與依賴）
+.venv*/
+venv*/
+ENV/
+build/
+dist/
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
 
-.venv/
-.venv314/
-
-output/
+# 2. 忽略龐大的測試影片檔（不應推上 GitHub）
 video/
+*.mp4
+*.mkv
+*.avi
+*.mov
 
+# 3. 忽略本地執行後自動生成的分析結果、快取與音訊
+output/
+analysis_audio.wav
+speech_cache.json
+transcript_with_events.txt
+
+# 4. 忽略 macOS 系統暫存檔
+.DS_Store
+._*
