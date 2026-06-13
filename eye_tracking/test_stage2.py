@@ -13,6 +13,7 @@ import argparse
 from stages.stage1_face_detection import FaceDetector
 from stages.stage2_head_pose import HeadPoseEstimator
 from utils.camera_utils import get_default_camera_matrix
+from utils.config_loader import load_config
 
 
 def test_with_image(image_path: str):
@@ -31,12 +32,22 @@ def test_with_image(image_path: str):
 
     camera_matrix = get_default_camera_matrix(w, h)
     
+    # 從配置文件加載參數
+    config = load_config()
+    face_config = config.get_face_detection_config()
+    head_pose_config = config.get_head_pose_config()
+    
+    print(f"\n使用配置:")
+    print(f"  Stage 1 - min_confidence: {face_config.get('min_confidence', 0.3)}")
+    print(f"  Stage 2 - face_model_path: {head_pose_config.get('face_model_path', 'models/face_model_ethxgaze.txt')}")
+    print(f"  Stage 2 - use_iterative: {head_pose_config.get('use_iterative', True)}")
+    
     # ==================== 階段 1：人臉檢測 ====================
     print("\n" + "=" * 70)
     print("[階段 1/2] 人臉檢測與特徵點定位")
     print("=" * 70)
     
-    detector = FaceDetector(config={'min_confidence': 0.3})
+    detector = FaceDetector(config=face_config)
     face_result = detector.detect(image)
     
     if face_result is None:
@@ -52,9 +63,7 @@ def test_with_image(image_path: str):
     print("[階段 2/2] 頭部姿態估計")
     print("=" * 70)
     
-    estimator = HeadPoseEstimator(config={
-        'face_model_path': 'models/face_model_ethxgaze.txt'
-    })
+    estimator = HeadPoseEstimator(config=head_pose_config)
     
     pose_result = estimator.estimate(
         landmarks_2d=face_result['landmarks_2d_selected'],

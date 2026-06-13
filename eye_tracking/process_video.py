@@ -26,39 +26,57 @@ from stages.stage5_gaze_vector import GazeVectorConverter
 
 from utils.camera_utils import get_default_camera_matrix
 from utils.visualization import draw_gaze_with_face_box
+from utils.config_loader import load_config
 
 
 class VideoGazeProcessor:
     """影片視線估計處理器"""
     
-    def __init__(self):
-        """初始化影片處理器"""
+    def __init__(self, config_path=None):
+        """
+        初始化影片處理器
+        
+        Args:
+            config_path: 配置文件路徑，如果為 None 則使用默認路徑
+        """
         print("=" * 70)
         print("視線估計影片處理器初始化")
         print("Video Gaze Estimation Processor Initialization")
         print("=" * 70)
         
+        # 加載配置文件
+        self.config = load_config(config_path)
+        
+        # 獲取各個階段的配置
+        face_config = self.config.get_face_detection_config()
+        head_pose_config = self.config.get_head_pose_config()
+        norm_config = self.config.get_normalization_config()
+        model_config = self.config.get_model_config()
+        
+        print("\n使用配置:")
+        print(f"  Stage 1 - min_confidence: {face_config.get('min_confidence')}")
+        print(f"  Stage 2 - face_model_path: {head_pose_config.get('face_model_path')}")
+        print(f"  Stage 3 - focal_length: {norm_config.get('focal_length')}, distance: {norm_config.get('distance')}")
+        print(f"  Stage 4 - model_path: {model_config.get('model_path')}")
+        print(f"  Stage 4 - use_gpu: {model_config.get('use_gpu')}")
+        
         # 初始化各個階段
         print("\n正在載入模型...")
         
-        self.face_detector = FaceDetector(config={'min_confidence': 0.3})
+        self.face_detector = FaceDetector(config=face_config)
         
-        self.head_pose_estimator = HeadPoseEstimator(config={
-            'face_model_path': 'models/face_model_ethxgaze.txt',
-            'use_iterative': True
-        })
+        self.head_pose_estimator = HeadPoseEstimator(config=head_pose_config)
         
-        self.image_normalizer = ImageNormalizer(config={
-            'output_size': (224, 224),
-            'focal_norm': 960.0,
-            'distance_norm': 60.0,
-            'face_model_path': 'models/face_model_ethxgaze.txt'
-        })
+        # 從配置文件讀取參數（注意：config.yaml 中使用 focal_length 和 distance）
+        normalizer_config = {
+            'output_size': tuple(norm_config.get('output_size', [224, 224])),
+            'focal_norm': norm_config.get('focal_length', 960.0),
+            'distance_norm': norm_config.get('distance', 60.0),
+            'face_model_path': norm_config.get('face_model_path', 'models/face_model_ethxgaze.txt')
+        }
+        self.image_normalizer = ImageNormalizer(config=normalizer_config)
         
-        self.gaze_estimator = GazeEstimator(config={
-            'model_path': 'models/epoch_24_ckpt.pth.tar',
-            'use_gpu': False
-        })
+        self.gaze_estimator = GazeEstimator(config=model_config)
         
         self.gaze_converter = GazeVectorConverter()
         
@@ -449,7 +467,7 @@ def main():
             return 0
     
     try:
-        # 初始化處理器
+        # 初始化處理器（使用配置文件）
         processor = VideoGazeProcessor()
         
         # 處理影片

@@ -17,6 +17,7 @@ from stages.stage4_gaze_network import GazeEstimator
 from stages.stage5_gaze_vector import GazeVectorConverter
 from utils.camera_utils import get_default_camera_matrix
 from utils.visualization import draw_gaze_with_face_box, draw_multiple_gazes
+from utils.config_loader import load_config
 
 
 def test_gaze_arrow_with_image(image_path: str):
@@ -37,25 +38,36 @@ def test_gaze_arrow_with_image(image_path: str):
     
     camera_matrix = get_default_camera_matrix(w, h)
     
+    # 從配置文件加載參數
+    config = load_config()
+    face_config = config.get_face_detection_config()
+    head_pose_config = config.get_head_pose_config()
+    norm_config = config.get_normalization_config()
+    model_config = config.get_model_config()
+    
+    print(f"\n使用配置:")
+    print(f"  Stage 1 - min_confidence: {face_config.get('min_confidence')}")
+    print(f"  Stage 2 - face_model_path: {head_pose_config.get('face_model_path')}")
+    print(f"  Stage 3 - focal_length: {norm_config.get('focal_length')}, distance: {norm_config.get('distance')}")
+    print(f"  Stage 4 - model_path: {model_config.get('model_path')}")
+    print(f"  Stage 4 - use_gpu: {model_config.get('use_gpu')}")
+    
     # 初始化所有階段
     print("\n初始化...")
-    detector = FaceDetector(config={'min_confidence': 0.3})
-    estimator = HeadPoseEstimator(config={
-        'face_model_path': 'models/face_model_ethxgaze.txt',
-        'use_iterative': True
-    })
-    normalizer = ImageNormalizer(config={
-        'output_size': (224, 224),
-        'focal_norm': 960.0,
-        'distance_norm': 60.0,
-        'face_model_path': 'models/face_model_ethxgaze.txt'
-    })
+    detector = FaceDetector(config=face_config)
+    estimator = HeadPoseEstimator(config=head_pose_config)
+    
+    # 從配置文件讀取參數（注意：config.yaml 中使用 focal_length 和 distance）
+    normalizer_config = {
+        'output_size': tuple(norm_config.get('output_size', [224, 224])),
+        'focal_norm': norm_config.get('focal_length', 960.0),
+        'distance_norm': norm_config.get('distance', 60.0),
+        'face_model_path': norm_config.get('face_model_path', 'models/face_model_ethxgaze.txt')
+    }
+    normalizer = ImageNormalizer(config=normalizer_config)
     
     try:
-        gaze_estimator = GazeEstimator(config={
-            'model_path': 'models/epoch_24_ckpt.pth.tar',
-            'use_gpu': True
-        })
+        gaze_estimator = GazeEstimator(config=model_config)
     except Exception as e:
         print(f" 無法載入視線估計模型: {e}")
         return
@@ -196,25 +208,33 @@ def test_gaze_arrow_with_webcam():
     print("按 'q' 退出，'s' 截圖")
     print("=" * 80)
     
+    # 從配置文件加載參數
+    config = load_config()
+    face_config = config.get_face_detection_config()
+    head_pose_config = config.get_head_pose_config()
+    norm_config = config.get_normalization_config()
+    model_config = config.get_model_config()
+    
+    print(f"\n使用配置:")
+    print(f"  Stage 1 - min_confidence: {face_config.get('min_confidence')}")
+    print(f"  Stage 4 - use_gpu: {model_config.get('use_gpu')}")
+    
     # 初始化
     print("\n初始化...")
-    detector = FaceDetector(config={'min_confidence': 0.5})
-    estimator = HeadPoseEstimator(config={
-        'face_model_path': 'models/face_model_ethxgaze.txt',
-        'use_iterative': True
-    })
-    normalizer = ImageNormalizer(config={
-        'output_size': (224, 224),
-        'focal_norm': 960.0,
-        'distance_norm': 60.0,
-        'face_model_path': 'models/face_model_ethxgaze.txt'
-    })
+    detector = FaceDetector(config=face_config)
+    estimator = HeadPoseEstimator(config=head_pose_config)
+    
+    # 從配置文件讀取參數（注意：config.yaml 中使用 focal_length 和 distance）
+    normalizer_config = {
+        'output_size': tuple(norm_config.get('output_size', [224, 224])),
+        'focal_norm': norm_config.get('focal_length', 960.0),
+        'distance_norm': norm_config.get('distance', 60.0),
+        'face_model_path': norm_config.get('face_model_path', 'models/face_model_ethxgaze.txt')
+    }
+    normalizer = ImageNormalizer(config=normalizer_config)
     
     try:
-        gaze_estimator = GazeEstimator(config={
-            'model_path': 'models/epoch_24_ckpt.pth.tar',
-            'use_gpu': True
-        })
+        gaze_estimator = GazeEstimator(config=model_config)
     except Exception as e:
         print(f" 無法載入視線估計模型: {e}")
         return

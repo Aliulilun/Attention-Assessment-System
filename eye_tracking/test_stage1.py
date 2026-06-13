@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 from stages.stage1_face_detection import FaceDetector
+from utils.config_loader import load_config
 
 
 def test_with_webcam():
@@ -18,8 +19,16 @@ def test_with_webcam():
     print("按 'q' 鍵退出")
     print("=" * 70)
     
+    # 從配置文件加載參數
+    config = load_config()
+    face_config = config.get_face_detection_config()
+    
+    print(f"\n使用配置:")
+    print(f"  - min_confidence: {face_config.get('min_confidence', 0.5)}")
+    print(f"  - yolo_conf: {face_config.get('yolo_conf', 0.4)}")
+    
     # 初始化檢測器
-    detector = FaceDetector(config={'min_confidence': 0.5})
+    detector = FaceDetector(config=face_config)
     
     # 打開攝像頭
     cap = cv2.VideoCapture(0)
@@ -84,8 +93,16 @@ def test_with_image(image_path: str):
     print(f"\n讀取圖像: {image_path}")
     print(f"圖像尺寸: {image.shape[1]} x {image.shape[0]}")
     
+    # 從配置文件加載參數
+    config = load_config()
+    face_config = config.get_face_detection_config()
+    
+    print(f"\n使用配置:")
+    print(f"  - min_confidence: {face_config.get('min_confidence', 0.5)}")
+    print(f"  - yolo_conf: {face_config.get('yolo_conf', 0.4)}")
+    
     # 初始化檢測器
-    detector = FaceDetector(config={'min_confidence': 0.5})
+    detector = FaceDetector(config=face_config)
     
     # 檢測人臉
     print("\n執行檢測...")

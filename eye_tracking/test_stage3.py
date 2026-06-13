@@ -14,6 +14,7 @@ from stages.stage1_face_detection import FaceDetector
 from stages.stage2_head_pose import HeadPoseEstimator
 from stages.stage3_normalization import ImageNormalizer
 from utils.camera_utils import get_default_camera_matrix
+from utils.config_loader import load_config
 
 
 def test_with_image(image_path: str):
@@ -35,12 +36,25 @@ def test_with_image(image_path: str):
     # 生成相機內參矩陣
     camera_matrix = get_default_camera_matrix(w, h)
     
+    # 從配置文件加載參數
+    config = load_config()
+    face_config = config.get_face_detection_config()
+    head_pose_config = config.get_head_pose_config()
+    norm_config = config.get_normalization_config()
+    
+    print(f"\n使用配置:")
+    print(f"  Stage 1 - min_confidence: {face_config.get('min_confidence', 0.3)}")
+    print(f"  Stage 2 - face_model_path: {head_pose_config.get('face_model_path')}")
+    print(f"  Stage 3 - focal_length: {norm_config.get('focal_length')}")
+    print(f"  Stage 3 - distance: {norm_config.get('distance')}")
+    print(f"  Stage 3 - output_size: {norm_config.get('output_size')}")
+    
     # ==================== 階段 1：人臉檢測 ====================
     print("\n" + "=" * 70)
     print("[階段 1/3] 人臉檢測與特徵點定位")
     print("=" * 70)
     
-    detector = FaceDetector(config={'min_confidence': 0.3})
+    detector = FaceDetector(config=face_config)
     face_result = detector.detect(image)
     
     if face_result is None:
@@ -56,10 +70,7 @@ def test_with_image(image_path: str):
     print("[階段 2/3] 頭部姿態估計（使用 ETH-XGaze 6 點模型）")
     print("=" * 70)
     
-    estimator = HeadPoseEstimator(config={
-        'face_model_path': 'models/face_model_ethxgaze.txt',  # ETH-XGaze 6 點模型
-        'use_iterative': True
-    })
+    estimator = HeadPoseEstimator(config=head_pose_config)
     
     # 使用 ETH-XGaze 6 點進行 solvePnP
     pose_result = estimator.estimate(
@@ -79,20 +90,23 @@ def test_with_image(image_path: str):
     
     # ==================== 階段 3：圖像正規化 ====================
     print("\n" + "=" * 70)
-    print("[階段 3/3] 圖像正規化（使用正確參數）")
+    print("[階段 3/3] 圖像正規化（使用配置文件參數）")
     print("=" * 70)
     
-    #  修正：使用 ETH-XGaze 6 點模型
-    normalizer = ImageNormalizer(config={
-        'output_size': (448, 448),
-        'focal_norm': 960.0,      # 調整以覆蓋完整臉部（FOV ~19°）      
-        'distance_norm': 60.0,    #  正確：60 cm（不是 600mm！）
-        'face_model_path': 'models/face_model_ethxgaze.txt'  # ETH-XGaze 6 點模型
-    })
+    # 從配置文件讀取參數（注意：config.yaml 中使用 focal_length 和 distance）
+    normalizer_config = {
+        'output_size': tuple(norm_config.get('output_size', [224, 224])),
+        'focal_norm': norm_config.get('focal_length', 960.0),
+        'distance_norm': norm_config.get('distance', 60.0),
+        'face_model_path': norm_config.get('face_model_path', 'models/face_model_ethxgaze.txt')
+    }
     
-    print("⚠️  重要：已修正參數")
-    print("  - focal_norm: 600 (調整以覆蓋完整臉部)")
-    print("  - distance_norm: 60 cm")
+    normalizer = ImageNormalizer(config=normalizer_config)
+    
+    print("⚠️  使用配置文件參數:")
+    print(f"  - focal_norm: {normalizer_config['focal_norm']}")
+    print(f"  - distance_norm: {normalizer_config['distance_norm']} cm")
+    print(f"  - output_size: {normalizer_config['output_size']}")
     
     norm_result = normalizer.normalize(
         image=image,

@@ -18,6 +18,11 @@ from .camera_utils import (
     get_default_camera_matrix,
     load_camera_calibration,
 )
+from .config_loader import (
+    ConfigLoader,
+    load_config,
+    get_global_config,
+)
 
 __all__ = [
     # 新版視線箭頭函數
@@ -32,5 +37,9 @@ __all__ = [
     # 相機工具
     'get_default_camera_matrix',
     'load_camera_calibration',
+    # 配置加載器
+    'ConfigLoader',
+    'load_config',
+    'get_global_config',
 ]
 
