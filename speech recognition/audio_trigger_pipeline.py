@@ -6,7 +6,7 @@ import subprocess
 import sys
 import wave
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -22,6 +22,32 @@ DEFAULT_KEYWORDS = [
     "準備囉",
 ]
 
+TEXT_CANONICAL_MAP = str.maketrans(
+    {
+        "這": "这",
+        "裡": "里",
+        "準": "准",
+        "囉": "啰",
+    }
+)
+
+DIGIT_CANONICAL_MAP = str.maketrans(
+    {
+        "零": "0",
+        "〇": "0",
+        "一": "1",
+        "二": "2",
+        "兩": "2",
+        "三": "3",
+        "四": "4",
+        "五": "5",
+        "六": "6",
+        "七": "7",
+        "八": "8",
+        "九": "9",
+    }
+)
+
 
 @dataclass
 class SpeechConfig:
@@ -34,7 +60,10 @@ class SpeechConfig:
     model_name: str = "large-v3"
     language: str = "zh"
     response_window_sec: float = 3.0
+    time_offset_sec: float = 0.0
     keywords: Tuple[str, ...] = tuple(DEFAULT_KEYWORDS)
+    speech_context_gap_sec: float = 0.8
+    keyword_max_edit_distance: int = 1
     skip_whisper: bool = False
     noise_trigger_enabled: bool = True
     noise_sample_rate: int = 16000
@@ -44,6 +73,9 @@ class SpeechConfig:
     noise_merge_gap_sec: float = 0.20
     noise_low_band_hz: float = 1500.0
     noise_high_band_hz: float = 4500.0
+    noise_flatness_max: float = 0.42
+    noise_dominant_jump_hz: float = 280.0
+    noise_dominant_std_max: float = 220.0
     force_rebuild: bool = False
 
 
@@ -71,6 +103,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=3.0,
         help="觸發後的反應時間窗秒數。預設為 3.0",
+    )
+    parser.add_argument(
+        "--time-offset",
+        type=float,
+        default=0.0,
+        help="整體時間校正秒數。正數代表時間往後，負數代表時間往前",
     )
     parser.add_argument(
         "--keywords",
@@ -111,6 +149,7 @@ def build_config(args: argparse.Namespace) -> SpeechConfig:
         extracted_audio_path=os.path.join(output_dir, "analysis_audio.wav"),
         model_name=args.model,
         response_window_sec=args.window,
+        time_offset_sec=args.time_offset,
         keywords=tuple(args.keywords or DEFAULT_KEYWORDS),
         skip_whisper=args.skip_whisper,
         noise_trigger_enabled=not args.disable_noise_trigger,
@@ -133,8 +172,10 @@ def get_video_signature(video_path: str) -> Dict[str, Any]:
 
 def normalize_text(text: str) -> str:
     text = text.strip().lower()
+    text = text.translate(TEXT_CANONICAL_MAP)
     text = re.sub(r"\s+", "", text)
     text = re.sub(r"[^\w\u4e00-\u9fff]+", "", text)
+    text = text.translate(DIGIT_CANONICAL_MAP)
     return text
 
 
@@ -145,19 +186,256 @@ def format_mmss(seconds: float) -> str:
     return f"{minutes:02d}:{remain_seconds:02d}"
 
 
-def find_trigger_keywords(text: str, keywords: Sequence[str]) -> List[str]:
+def apply_time_offset(seconds: float, config: SpeechConfig) -> float:
+    return round(max(0.0, seconds + config.time_offset_sec), 3)
+
+
+def levenshtein_distance(text_a: str, text_b: str) -> int:
+    if text_a == text_b:
+        return 0
+    if not text_a:
+        return len(text_b)
+    if not text_b:
+        return len(text_a)
+
+    previous_row = list(range(len(text_b) + 1))
+    for index_a, char_a in enumerate(text_a, start=1):
+        current_row = [index_a]
+        for index_b, char_b in enumerate(text_b, start=1):
+            insert_cost = current_row[index_b - 1] + 1
+            delete_cost = previous_row[index_b] + 1
+            replace_cost = previous_row[index_b - 1] + (char_a != char_b)
+            current_row.append(min(insert_cost, delete_cost, replace_cost))
+        previous_row = current_row
+    return previous_row[-1]
+
+
+def has_near_match(
+    normalized_text: str,
+    normalized_keyword: str,
+    max_edit_distance: int,
+) -> bool:
+    if normalized_keyword in normalized_text:
+        return True
+
+    if max_edit_distance <= 0 or not normalized_text or not normalized_keyword:
+        return False
+
+    if min(len(normalized_text), len(normalized_keyword)) < 3:
+        return False
+
+    if abs(len(normalized_text) - len(normalized_keyword)) > max_edit_distance + 1:
+        return False
+
+    return (
+        levenshtein_distance(normalized_text, normalized_keyword)
+        <= max_edit_distance
+    )
+
+
+def find_trigger_keywords(
+    text_candidates: Sequence[str],
+    keywords: Sequence[str],
+    max_edit_distance: int,
+) -> List[str]:
     found: List[str] = []
-    normalized_text = normalize_text(text)
+    normalized_candidates = [
+        normalize_text(candidate) for candidate in text_candidates if candidate
+    ]
 
     for keyword in keywords:
         normalized_keyword = normalize_text(keyword)
         if not normalized_keyword:
             continue
 
-        if keyword in text or normalized_keyword in normalized_text:
+        if any(
+            has_near_match(candidate, normalized_keyword, max_edit_distance)
+            for candidate in normalized_candidates
+        ):
             found.append(keyword)
 
     return found
+
+
+def find_boundary_keywords(
+    current_text: str,
+    next_text: str,
+    keywords: Sequence[str],
+) -> List[str]:
+    found: List[str] = []
+    current_normalized = normalize_text(current_text)
+    next_normalized = normalize_text(next_text)
+
+    if not current_normalized or not next_normalized:
+        return found
+
+    for keyword in keywords:
+        normalized_keyword = normalize_text(keyword)
+        if len(normalized_keyword) < 2:
+            continue
+
+        if normalized_keyword in current_normalized:
+            continue
+        if normalized_keyword in next_normalized:
+            continue
+
+        for split_index in range(1, len(normalized_keyword)):
+            prefix = normalized_keyword[:split_index]
+            suffix = normalized_keyword[split_index:]
+            if current_normalized.endswith(prefix) and next_normalized.startswith(
+                suffix
+            ):
+                found.append(keyword)
+                break
+
+    return found
+
+
+def find_all_occurrences(text: str, pattern: str) -> List[int]:
+    positions: List[int] = []
+    start_index = 0
+    while True:
+        match_index = text.find(pattern, start_index)
+        if match_index < 0:
+            return positions
+        positions.append(match_index)
+        start_index = match_index + max(1, len(pattern))
+
+
+def build_direct_keyword_events(
+    record: Dict[str, Any],
+    config: SpeechConfig,
+) -> List[Dict[str, Any]]:
+    normalized_text = normalize_text(record["text"])
+    if not normalized_text:
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+    for keyword in config.keywords:
+        normalized_keyword = normalize_text(keyword)
+        if not normalized_keyword:
+            continue
+
+        for start_index in find_all_occurrences(normalized_text, normalized_keyword):
+            candidates.append(
+                {
+                    "start_index": start_index,
+                    "end_index": start_index + len(normalized_keyword),
+                    "keyword": keyword,
+                    "normalized_keyword": normalized_keyword,
+                }
+            )
+
+    if candidates:
+        candidates.sort(
+            key=lambda item: (
+                -(item["end_index"] - item["start_index"]),
+                item["start_index"],
+                item["keyword"],
+            )
+        )
+        accepted: List[Dict[str, Any]] = []
+        occupied_positions: Set[int] = set()
+        for candidate in candidates:
+            span = set(range(candidate["start_index"], candidate["end_index"]))
+            if span & occupied_positions:
+                same_span = [
+                    item
+                    for item in accepted
+                    if item["start_index"] == candidate["start_index"]
+                    and item["end_index"] == candidate["end_index"]
+                ]
+                if same_span:
+                    same_span[0]["keywords"].append(candidate["keyword"])
+                continue
+
+            accepted.append(
+                {
+                    "start_index": candidate["start_index"],
+                    "end_index": candidate["end_index"],
+                    "keywords": [candidate["keyword"]],
+                }
+            )
+            occupied_positions.update(span)
+    else:
+        accepted = []
+        for keyword in config.keywords:
+            normalized_keyword = normalize_text(keyword)
+            if has_near_match(
+                normalized_text,
+                normalized_keyword,
+                config.keyword_max_edit_distance,
+            ):
+                accepted.append(
+                    {
+                        "start_index": 0,
+                        "end_index": max(1, len(normalized_text)),
+                        "keywords": [keyword],
+                    }
+                )
+
+    segment_start = float(record["raw_start"])
+    segment_end = float(record["raw_end"])
+    segment_duration = max(0.0, segment_end - segment_start)
+    normalized_length = max(1, len(normalized_text))
+
+    trigger_events: List[Dict[str, Any]] = []
+    for index, match in enumerate(sorted(accepted, key=lambda item: item["start_index"])):
+        estimated_raw_start = segment_start + (
+            match["start_index"] / normalized_length
+        ) * segment_duration
+        event_start = apply_time_offset(estimated_raw_start, config)
+        event_end = apply_time_offset(
+            estimated_raw_start + config.response_window_sec,
+            config,
+        )
+        trigger_events.append(
+            {
+                "id": f"speech_{record['id']}_{index + 1:02d}",
+                "event_type": "speech",
+                "keywords": sorted(set(match["keywords"])),
+                "match_source": "direct",
+                "start": event_start,
+                "end": event_start,
+                "trigger_window": (event_start, event_end),
+            }
+        )
+
+    return trigger_events
+
+
+def build_boundary_keyword_events(
+    record: Dict[str, Any],
+    next_record: Dict[str, Any],
+    config: SpeechConfig,
+) -> List[Dict[str, Any]]:
+    if next_record["raw_start"] - record["raw_end"] > config.speech_context_gap_sec:
+        return []
+
+    found_keywords = find_boundary_keywords(
+        record["text"],
+        next_record["text"],
+        config.keywords,
+    )
+    if not found_keywords:
+        return []
+
+    event_start = apply_time_offset(float(record["raw_start"]), config)
+    event_end = apply_time_offset(
+        float(record["raw_start"]) + config.response_window_sec,
+        config,
+    )
+    return [
+        {
+            "id": f"speech_{record['id']}_context",
+            "event_type": "speech",
+            "keywords": sorted(set(found_keywords)),
+            "match_source": "context",
+            "start": event_start,
+            "end": event_start,
+            "trigger_window": (event_start, event_end),
+        }
+    ]
 
 
 def merge_overlapping_windows(
@@ -190,6 +468,9 @@ def is_cache_valid(cache_data: Dict[str, Any], config: SpeechConfig) -> bool:
     checks = {
         "model_name": config.model_name,
         "language": config.language,
+        "time_offset_sec": config.time_offset_sec,
+        "speech_context_gap_sec": config.speech_context_gap_sec,
+        "keyword_max_edit_distance": config.keyword_max_edit_distance,
         "skip_whisper": config.skip_whisper,
         "noise_trigger_enabled": config.noise_trigger_enabled,
         "noise_sample_rate": config.noise_sample_rate,
@@ -199,10 +480,15 @@ def is_cache_valid(cache_data: Dict[str, Any], config: SpeechConfig) -> bool:
         "noise_merge_gap_sec": config.noise_merge_gap_sec,
         "noise_low_band_hz": config.noise_low_band_hz,
         "noise_high_band_hz": config.noise_high_band_hz,
+        "noise_flatness_max": config.noise_flatness_max,
+        "noise_dominant_jump_hz": config.noise_dominant_jump_hz,
+        "noise_dominant_std_max": config.noise_dominant_std_max,
     }
 
     for key, expected_value in checks.items():
         cached_value = cached_config.get(key)
+        if cached_value is None:
+            return False
         if isinstance(expected_value, float):
             if float(cached_value) != float(expected_value):
                 return False
@@ -265,7 +551,6 @@ def build_segment_records(
     config: SpeechConfig,
 ) -> Tuple[List[Dict[str, Any]], List[Tuple[float, float]]]:
     records: List[Dict[str, Any]] = []
-    raw_windows: List[Tuple[float, float]] = []
     last_normalized_text = ""
 
     for segment in segments:
@@ -277,29 +562,59 @@ def build_segment_records(
             continue
 
         normalized_text = normalize_text(text)
-        if normalized_text and normalized_text == last_normalized_text:
+        
+        # 【修改重點】：判斷當前句子是否包含我們定義的關鍵字
+        has_keyword = any(normalize_text(kw) in normalized_text for kw in config.keywords)
+        
+        # 避免 Whisper 幻覺：但如果該句「包含關鍵字」，就算與上一句重複也絕對保留
+        if normalized_text and normalized_text == last_normalized_text and not has_keyword:
             continue
+            
         last_normalized_text = normalized_text
 
-        found_keywords = find_trigger_keywords(text, config.keywords)
-        trigger_window = None
-
-        if found_keywords:
-            trigger_window = (
-                round(start_time, 3),
-                round(start_time + config.response_window_sec, 3),
-            )
-            raw_windows.append(trigger_window)
+        raw_start_time = float(segment["start"])
+        raw_end_time = float(segment["end"])
+        display_start_time = apply_time_offset(raw_start_time, config)
+        display_end_time = apply_time_offset(raw_end_time, config)
 
         records.append(
             {
-                "start": round(start_time, 3),
-                "end": round(end_time, 3),
+                "id": f"{len(records) + 1:04d}",
+                "raw_start": round(raw_start_time, 3),
+                "raw_end": round(raw_end_time, 3),
+                "start": display_start_time,
+                "end": display_end_time,
                 "text": text,
-                "keywords": found_keywords,
-                "trigger_window": trigger_window,
+                "keywords": [],
+                "trigger_events": [],
                 "event_type": "speech",
             }
+        )
+
+    raw_windows: List[Tuple[float, float]] = []
+    for index, record in enumerate(records):
+        trigger_events = build_direct_keyword_events(record, config)
+
+        if not trigger_events and index + 1 < len(records):
+            trigger_events = build_boundary_keyword_events(
+                record,
+                records[index + 1],
+                config,
+            )
+
+        if not trigger_events:
+            continue
+
+        record["trigger_events"] = trigger_events
+        record["keywords"] = sorted(
+            {
+                keyword
+                for event in trigger_events
+                for keyword in event["keywords"]
+            }
+        )
+        raw_windows.extend(
+            [tuple(event["trigger_window"]) for event in trigger_events]
         )
 
     return records, raw_windows
@@ -361,49 +676,78 @@ def percentile_value(values: Sequence[float], q: float) -> float:
 
 
 def group_candidate_intervals(
-    candidates: Sequence[Tuple[float, float, float]],
-    min_duration_sec: float,
-    merge_gap_sec: float,
+    candidates: Sequence[Dict[str, float]],
+    config: SpeechConfig,
 ) -> List[Dict[str, float]]:
     if not candidates:
         return []
 
     grouped: List[Dict[str, float]] = []
-    current_start, current_end, current_score = candidates[0]
-    current_peak = current_score
-    current_count = 1
+    current_group: List[Dict[str, float]] = [candidates[0]]
 
-    for start_time, end_time, score in candidates[1:]:
-        if start_time - current_end <= merge_gap_sec:
-            current_end = end_time
-            current_peak = max(current_peak, score)
-            current_score += score
-            current_count += 1
-            continue
+    def finalize_group(group: Sequence[Dict[str, float]]) -> None:
+        if not group:
+            return
 
-        if current_end - current_start >= min_duration_sec:
-            grouped.append(
-                {
-                    "start": round(current_start, 3),
-                    "end": round(current_end, 3),
-                    "score": round(current_score / current_count, 3),
-                    "peak_score": round(current_peak, 3),
-                }
-            )
+        start_time = float(group[0]["start"])
+        end_time = float(group[-1]["end"])
+        duration = end_time - start_time
+        if duration < config.noise_min_duration_sec:
+            return
 
-        current_start, current_end, current_score = start_time, end_time, score
-        current_peak = score
-        current_count = 1
+        dominant_frequencies = np.asarray(
+            [item["dominant_freq"] for item in group], dtype=np.float32
+        )
+        centroid_values = np.asarray(
+            [item["spectral_centroid"] for item in group], dtype=np.float32
+        )
+        flatness_values = np.asarray(
+            [item["spectral_flatness"] for item in group], dtype=np.float32
+        )
+        scores = np.asarray([item["score"] for item in group], dtype=np.float32)
 
-    if current_end - current_start >= min_duration_sec:
+        dominant_std = float(np.std(dominant_frequencies))
+        flatness_mean = float(np.mean(flatness_values))
+        centroid_mean = float(np.mean(centroid_values))
+
+        if dominant_std > config.noise_dominant_std_max:
+            return
+        if flatness_mean > config.noise_flatness_max:
+            return
+        if centroid_mean < config.noise_low_band_hz:
+            return
+        if centroid_mean > config.noise_high_band_hz + 600.0:
+            return
+
         grouped.append(
             {
-                "start": round(current_start, 3),
-                "end": round(current_end, 3),
-                "score": round(current_score / current_count, 3),
-                "peak_score": round(current_peak, 3),
+                "start": round(start_time, 3),
+                "end": round(end_time, 3),
+                "score": round(float(np.mean(scores)), 3),
+                "peak_score": round(float(np.max(scores)), 3),
+                "dominant_freq_mean": round(float(np.mean(dominant_frequencies)), 1),
+                "dominant_freq_std": round(dominant_std, 1),
+                "spectral_centroid": round(centroid_mean, 1),
+                "spectral_flatness": round(flatness_mean, 3),
             }
         )
+
+    for candidate in candidates[1:]:
+        last_item = current_group[-1]
+        within_gap = candidate["start"] - last_item["end"] <= config.noise_merge_gap_sec
+        freq_consistent = (
+            abs(candidate["dominant_freq"] - last_item["dominant_freq"])
+            <= config.noise_dominant_jump_hz
+        )
+
+        if within_gap and freq_consistent:
+            current_group.append(candidate)
+            continue
+
+        finalize_group(current_group)
+        current_group = [candidate]
+
+    finalize_group(current_group)
 
     return grouped
 
@@ -432,6 +776,7 @@ def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
     rms_values: List[float] = []
     band_ratios: List[float] = []
     peak_ratios: List[float] = []
+    flatness_values: List[float] = []
 
     for start in range(0, len(audio) - frame_size + 1, hop_size):
         frame = audio[start : start + frame_size]
@@ -445,6 +790,16 @@ def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
         target_bins = magnitude[target_mask]
         target_mean = float(np.mean(target_bins) + 1e-8)
         target_peak = float(np.max(target_bins) + 1e-8) if target_bins.size else 0.0
+        target_flatness = (
+            float(np.exp(np.mean(np.log(target_bins + 1e-8))) / target_mean)
+            if target_bins.size
+            else 1.0
+        )
+        dominant_index = int(np.argmax(magnitude))
+        dominant_freq = float(freqs[dominant_index])
+        spectral_centroid = float(
+            np.sum(freqs * magnitude) / (np.sum(magnitude) + 1e-8)
+        )
 
         band_ratio = target_energy / total_energy
         peak_ratio = target_peak / target_mean if target_bins.size else 0.0
@@ -458,17 +813,22 @@ def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
                 "band_ratio": band_ratio,
                 "peak_ratio": peak_ratio,
                 "high_low_ratio": high_low_ratio,
+                "spectral_flatness": target_flatness,
+                "dominant_freq": dominant_freq,
+                "spectral_centroid": spectral_centroid,
             }
         )
         rms_values.append(rms)
         band_ratios.append(band_ratio)
         peak_ratios.append(peak_ratio)
+        flatness_values.append(target_flatness)
 
     rms_threshold = max(0.01, percentile_value(rms_values, 75) * 1.10)
-    band_ratio_threshold = max(0.28, percentile_value(band_ratios, 85))
-    peak_ratio_threshold = max(3.2, percentile_value(peak_ratios, 80))
+    band_ratio_threshold = max(0.24, percentile_value(band_ratios, 82))
+    peak_ratio_threshold = max(3.5, percentile_value(peak_ratios, 82))
+    flatness_threshold = min(config.noise_flatness_max, percentile_value(flatness_values, 45))
 
-    candidates: List[Tuple[float, float, float]] = []
+    candidates: List[Dict[str, float]] = []
     for metric in frame_metrics:
         if metric["rms"] < rms_threshold:
             continue
@@ -478,37 +838,62 @@ def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
             continue
         if metric["high_low_ratio"] < 0.75:
             continue
+        if metric["spectral_flatness"] > flatness_threshold:
+            continue
+        if metric["dominant_freq"] < config.noise_low_band_hz:
+            continue
+        if metric["dominant_freq"] > config.noise_high_band_hz:
+            continue
 
         score = (
             metric["band_ratio"] * 2.5
             + metric["peak_ratio"] * 0.4
             + metric["high_low_ratio"] * 0.6
+            + max(0.0, 0.35 - metric["spectral_flatness"]) * 2.0
         )
-        candidates.append((metric["start"], metric["end"], score))
+        candidates.append(
+            {
+                "start": metric["start"],
+                "end": metric["end"],
+                "score": score,
+                "dominant_freq": metric["dominant_freq"],
+                "spectral_centroid": metric["spectral_centroid"],
+                "spectral_flatness": metric["spectral_flatness"],
+            }
+        )
 
-    grouped = group_candidate_intervals(
-        candidates,
-        min_duration_sec=config.noise_min_duration_sec,
-        merge_gap_sec=config.noise_merge_gap_sec,
-    )
+    grouped = group_candidate_intervals(candidates, config)
 
     noise_events: List[Dict[str, Any]] = []
     for index, event in enumerate(grouped, start=1):
-        start_time = float(event["start"])
-        end_time = float(event["end"])
-        trigger_end = max(end_time, start_time + config.response_window_sec)
+        raw_start_time = float(event["start"])
+        raw_end_time = float(event["end"])
+        trigger_raw_end = max(
+            raw_end_time,
+            raw_start_time + config.response_window_sec,
+        )
+        start_time = apply_time_offset(raw_start_time, config)
+        end_time = apply_time_offset(raw_end_time, config)
+        trigger_start = apply_time_offset(raw_start_time, config)
+        trigger_end = apply_time_offset(trigger_raw_end, config)
         noise_events.append(
             {
                 "id": f"noise_{index:03d}",
-                "start": round(start_time, 3),
-                "end": round(end_time, 3),
+                "raw_start": round(raw_start_time, 3),
+                "raw_end": round(raw_end_time, 3),
+                "start": start_time,
+                "end": end_time,
                 "event_type": "noise",
                 "label": "alarm_like_noise",
                 "score": event["score"],
                 "peak_score": event["peak_score"],
+                "dominant_freq_mean": event["dominant_freq_mean"],
+                "dominant_freq_std": event["dominant_freq_std"],
+                "spectral_centroid": event["spectral_centroid"],
+                "spectral_flatness": event["spectral_flatness"],
                 "trigger_window": (
-                    round(start_time, 3),
-                    round(trigger_end, 3),
+                    trigger_start,
+                    trigger_end,
                 ),
             }
         )
@@ -528,7 +913,10 @@ def save_cache(
             "model_name": config.model_name,
             "language": config.language,
             "response_window_sec": config.response_window_sec,
+            "time_offset_sec": config.time_offset_sec,
             "keywords": list(config.keywords),
+            "speech_context_gap_sec": config.speech_context_gap_sec,
+            "keyword_max_edit_distance": config.keyword_max_edit_distance,
             "skip_whisper": config.skip_whisper,
             "noise_trigger_enabled": config.noise_trigger_enabled,
             "noise_sample_rate": config.noise_sample_rate,
@@ -538,6 +926,9 @@ def save_cache(
             "noise_merge_gap_sec": config.noise_merge_gap_sec,
             "noise_low_band_hz": config.noise_low_band_hz,
             "noise_high_band_hz": config.noise_high_band_hz,
+            "noise_flatness_max": config.noise_flatness_max,
+            "noise_dominant_jump_hz": config.noise_dominant_jump_hz,
+            "noise_dominant_std_max": config.noise_dominant_std_max,
         },
         "segment_records": list(segment_records),
         "noise_events": list(noise_events),
@@ -559,6 +950,7 @@ def save_report(
         file.write(f"影片：{config.video_path}\n")
         file.write(f"模型：{config.model_name}\n")
         file.write(f"反應時間窗：{config.response_window_sec:.1f} 秒\n")
+        file.write(f"時間校正：{config.time_offset_sec:+.3f} 秒\n")
         file.write(f"語音關鍵字：{'、'.join(config.keywords)}\n")
         file.write(f"是否跳過 Whisper：{'是' if config.skip_whisper else '否'}\n")
         file.write(
@@ -572,15 +964,22 @@ def save_report(
                 time_str = (
                     f"[{format_mmss(record['start'])} - {format_mmss(record['end'])}]"
                 )
-                if record["keywords"]:
-                    start_time, end_time = record["trigger_window"]
+                if record["trigger_events"]:
                     file.write(
-                        f"⭐ {time_str} [語音觸發：{' / '.join(record['keywords'])}] "
-                        f"{record['text']}\n"
+                        f"⭐ {time_str} {record['text']}\n"
                     )
-                    file.write(
-                        f"   -> 判定視窗：{start_time:.3f}s ~ {end_time:.3f}s\n"
-                    )
+                    for event in record["trigger_events"]:
+                        start_time, end_time = event["trigger_window"]
+                        match_label = (
+                            "跨片段觸發"
+                            if event.get("match_source") == "context"
+                            else "語音觸發"
+                        )
+                        file.write(
+                            f"   -> [{match_label}：{' / '.join(event['keywords'])}] "
+                            f"{event['start']:.3f}s，判定視窗："
+                            f"{start_time:.3f}s ~ {end_time:.3f}s\n"
+                        )
                 else:
                     file.write(f"   {time_str} {record['text']}\n")
         else:
@@ -593,7 +992,9 @@ def save_report(
                 file.write(
                     f"🔊 [{format_mmss(event['start'])} - {format_mmss(event['end'])}] "
                     f"{event['label']} score={event['score']:.3f} "
-                    f"peak={event['peak_score']:.3f}\n"
+                    f"peak={event['peak_score']:.3f} "
+                    f"freq={event['dominant_freq_mean']:.1f}Hz "
+                    f"flatness={event['spectral_flatness']:.3f}\n"
                 )
                 file.write(
                     f"   -> 判定視窗：{start_time:.3f}s ~ {end_time:.3f}s\n"
@@ -620,7 +1021,7 @@ def load_or_build_analysis(
         return segment_records, noise_events, trigger_windows, True
 
     segment_records: List[Dict[str, Any]] = []
-    raw_windows: List[Tuple[float, float]] = []
+    speech_windows: List[Tuple[float, float]] = []
 
     if not config.skip_whisper:
         whisper_result = transcribe_with_whisper(config)
@@ -628,14 +1029,26 @@ def load_or_build_analysis(
             whisper_result.get("segments", []),
             config,
         )
-        raw_windows.extend(speech_windows)
 
     noise_events = detect_noise_events(config)
-    raw_windows.extend(
-        [tuple(event["trigger_window"]) for event in noise_events if event["trigger_window"]]
+    
+    # 【修改重點】：怪聲偵測只需要「一個」判定視窗，取特徵分數最高的事件
+    if noise_events:
+        best_noise_event = max(noise_events, key=lambda x: x["score"])
+        noise_events = [best_noise_event]
+
+    noise_windows = merge_overlapping_windows(
+        [
+            tuple(event["trigger_window"])
+            for event in noise_events
+            if event["trigger_window"]
+        ]
     )
 
-    trigger_windows = merge_overlapping_windows(raw_windows)
+    trigger_windows = sorted(
+        speech_windows + noise_windows,
+        key=lambda window: window[0],
+    )
     save_cache(config, segment_records, noise_events, trigger_windows)
     return segment_records, noise_events, trigger_windows, False
 
@@ -648,12 +1061,15 @@ def print_summary(
     config: SpeechConfig,
 ) -> None:
     source_label = "快取" if loaded_from_cache else "重新分析"
-    speech_trigger_count = sum(1 for record in segment_records if record["keywords"])
+    speech_trigger_count = sum(
+        len(record.get("trigger_events", [])) for record in segment_records
+    )
 
     print("\n✅ 語音 / 怪聲解析完成")
     print(f"來源：{source_label}")
     print(f"影片：{config.video_path}")
     print(f"模型：{config.model_name}")
+    print(f"時間校正：{config.time_offset_sec:+.3f}s")
     print(f"語音觸發次數：{speech_trigger_count}")
     print(f"怪聲事件次數：{len(noise_events)}")
     print(f"合併後判定視窗：{len(trigger_windows)} 段")
@@ -664,7 +1080,8 @@ def print_summary(
         for event in noise_events:
             print(
                 f"  - {event['start']:.3f}s ~ {event['end']:.3f}s "
-                f"score={event['score']:.3f}"
+                f"score={event['score']:.3f} "
+                f"freq={event['dominant_freq_mean']:.1f}Hz"
             )
     print("觸發時間窗：")
     for start_time, end_time in trigger_windows:
