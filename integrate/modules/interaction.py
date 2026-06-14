@@ -2,8 +2,11 @@ import os
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 import math
 from ultralytics import YOLO
+import urllib.request
 
 class InteractionEngine:
     def __init__(self, pose_model_path=None, sma_window=5):
@@ -18,12 +21,18 @@ class InteractionEngine:
         else:
             self.model_human = YOLO('yolo11n-pose.pt') # 容錯預設路徑
 
-        # 2. 初始化 MediaPipe Hands
-        self.mp_hands = mp.solutions.hands.Hands(
-            min_detection_confidence=0.5, # 稍微調高信心值，確保抓得很穩才算
-            min_tracking_confidence=0.5, 
-            max_num_hands=4
+        # 2. 初始化 MediaPipe Hands (新版 Tasks API)
+        hand_model_path = self._get_hand_model_path()
+        base_options = python.BaseOptions(model_asset_path=hand_model_path)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_hands=4,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5
         )
+        self.hand_landmarker = vision.HandLandmarker.create_from_options(options)
         
         # 3. 色票定義
         self.C_CHILD = (0, 255, 0)           # 小孩：綠色
@@ -31,15 +40,34 @@ class InteractionEngine:
         self.C_WRIST_FALLBACK = (200, 0, 200) # YOLO 手腕代償：粉紫色
         
         self.sma_window = sma_window
+    
+    def _get_hand_model_path(self):
+        """下載並返回 hand_landmarker.task 模型路徑"""
+        model_dir = os.path.join(os.path.dirname(__file__), '..', 'model', 'gaze')
+        os.makedirs(model_dir, exist_ok=True)
+        model_path = os.path.join(model_dir, 'hand_landmarker.task')
+        
+        if not os.path.exists(model_path):
+            print(f">>> [InteractionEngine] 下載 hand_landmarker.task 模型...")
+            url = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
+            try:
+                urllib.request.urlretrieve(url, model_path)
+                print(f">>> [InteractionEngine] 模型下載完成: {model_path}")
+            except Exception as e:
+                print(f">>> [InteractionEngine] ⚠️ 模型下載失敗: {e}")
+                raise
+        
+        return model_path
 
     @staticmethod
     def is_valid_pointing(landmarks, frame_w, frame_h):
         """
         嚴格過濾：判斷手部是否「真的」伸出食指指向，沒抓穩或沒伸直絕對不連線
+        注意：新版 MediaPipe Tasks API，landmarks 是 list，不是 LandmarkList 對象
         """
-        wri = landmarks.landmark[0]  # 手腕
-        tip = landmarks.landmark[8]  # 食指尖
-        mcp = landmarks.landmark[5]  # 食指根部
+        wri = landmarks[0]  # 手腕
+        tip = landmarks[8]  # 食指尖
+        mcp = landmarks[5]  # 食指根部
         
         # 1. 確保關鍵點都在畫面合理範圍內 (避免邊緣誤判)
         if not (0 <= wri.x <= 1 and 0 <= wri.y <= 1 and 0 <= tip.x <= 1 and 0 <= tip.y <= 1):
@@ -191,17 +219,20 @@ class InteractionEngine:
         # ====================================================
         # 🟢 任務二：人類手勢判定與精準指向
         # ====================================================
-        mp_results = self.mp_hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        # 使用新版 MediaPipe Tasks API
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        mp_results = self.hand_landmarker.detect(mp_image)
         
-        if mp_results.multi_hand_landmarks:
-            for hand_lms in mp_results.multi_hand_landmarks:
+        if mp_results.hand_landmarks:
+            for hand_lms in mp_results.hand_landmarks:
                 
                 # 🌟 嚴格過濾：如果沒有確實伸出食指，就跳過不畫射線
                 if not self.is_valid_pointing(hand_lms, FRAME_W, FRAME_H):
                     continue
                     
-                p_wri = (int(hand_lms.landmark[0].x * FRAME_W), int(hand_lms.landmark[0].y * FRAME_H)) 
-                p_idx = (int(hand_lms.landmark[8].x * FRAME_W), int(hand_lms.landmark[8].y * FRAME_H)) 
+                p_wri = (int(hand_lms[0].x * FRAME_W), int(hand_lms[0].y * FRAME_H)) 
+                p_idx = (int(hand_lms[8].x * FRAME_W), int(hand_lms[8].y * FRAME_H)) 
                 
                 best_owner, best_score = None, float('inf') 
                 for person in yolo_people:
@@ -210,7 +241,7 @@ class InteractionEngine:
                     if score < best_score:
                         best_score, best_owner = score, person["owner"]
                         
-                vec_x = hand_lms.landmark[0].x - hand_lms.landmark[9].x 
+                vec_x = hand_lms[0].x - hand_lms[9].x 
                 
                 if best_score > 300 or best_owner is None:
                     best_owner = "Tester" if p_wri[0] < DIVIDER_X else "Child"
@@ -223,7 +254,7 @@ class InteractionEngine:
                 
                 # 畫出指關節
                 for pt in [4, 8, 12, 16, 20]: 
-                    cv2.circle(frame, (int(hand_lms.landmark[pt].x * FRAME_W), int(hand_lms.landmark[pt].y * FRAME_H)), 5, hand_color, -1)
+                    cv2.circle(frame, (int(hand_lms[pt].x * FRAME_W), int(hand_lms[pt].y * FRAME_H)), 5, hand_color, -1)
                 
                 # 計算發射向量
                 vec = np.array(p_idx) - np.array(p_wri)

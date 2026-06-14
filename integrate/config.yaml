@@ -1,0 +1,78 @@
+# ==================== 視線估計配置 ====================
+gaze_estimation:
+  face_detection:
+    min_confidence: 0.3
+    yolo_conf: 0.4
+    yolo_model_path: "model/gaze/nano.pt"
+    face_landmarker_task: "model/gaze/face_landmarker.task"
+    crop_padding_ratio: 0.2
+    target_center_w: 1600
+    target_center_h: 960
+    key_landmarks_indices: [33, 133, 362, 263, 61, 291]
+  
+  head_pose:
+    face_model_path: "model/gaze/face_model_ethxgaze.txt"
+    use_iterative: true
+    method: "SOLVEPNP_ITERATIVE"
+  
+  normalization:
+    face_model_path: "model/gaze/face_model_ethxgaze.txt"
+    focal_length: 960
+    distance: 60
+    output_size: [224, 224]
+  
+  model:
+    model_path: "model/gaze/epoch_24_ckpt.pth.tar"
+    use_gpu: true
+    device: "cpu"
+    input_size: [224, 224]
+    normalize_mean: [0.485, 0.456, 0.406]
+    normalize_std: [0.229, 0.224, 0.225]
+
+# ==================== YOLO 模型配置 ====================
+yolo_models:
+  stage_1: "model/front_model.pt"
+  stage_2: "model/front_model.pt"
+  stage_3: "model/background_model.pt"
+  stage_4: "model/background_model.pt"
+  stage_5: "model/balloon_model.pt"
+  stage_6: "model/doll_model.pt"
+  stage_7: "model/toy_model.pt"
+  stage_8: "model/robot_point_model.pt"
+  pose_model: "model/yolo11n-pose.pt"
+
+# ==================== 語音辨識配置 ====================
+speech:
+  keywords: ["開始", "321", "準備", "你看", "看這裡", "準備囉", "機器人"]
+  trigger_window: 3.0  # 秒
+  model_name: "large-v3"
+  language: "zh"
+
+# ==================== 手勢互動配置 ====================
+interaction:
+  sma_window: 5  # 平滑移動平均窗口大小
+  pointing_threshold: 0.5  # 指向判定閾值
+
+# ==================== 階段偵測配置 ====================
+signboard:
+  allowlist: "12345678"  # OCR 允許的字符
+
+# ==================== 輸出配置 ====================
+output:
+  video_path: "output/output_result_final.mp4"
+  event_log_path: "output/event_record.txt"
+  gaze_csv_path: "output/gaze_data.csv"
+  
+# ==================== 影片處理配置 ====================
+video:
+  input_path: "video/video1.mp4"
+  fps: 30
+  preview_window: "Multi-Modal AI System Preview"
+  preview_size: [1280, 720]
+  
+# ==================== 調試配置 ====================
+debug:
+  verbose: true
+  print_timings: false
+  save_debug_images: false
+  gc_interval: 100  # 每 N 幀執行一次垃圾回收
