@@ -65,7 +65,7 @@ output:
   
 # ==================== 影片處理配置 ====================
 video:
-  input_path: "video/video1.mp4"
+  input_path: "video/video3.mp4"
   fps: 30
   preview_window: "Multi-Modal AI System Preview"
   preview_size: [1280, 720]
