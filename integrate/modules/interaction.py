@@ -24,7 +24,7 @@ class InteractionEngine:
         # 🌟 採用合作人建議：升級為 MediaPipe Tasks API 解決閃退問題
         print(">>> [InteractionEngine] 載入 MediaPipe Hand Landmarker (Tasks API)...")
         # 請確認 hand_landmarker.task 放在 model 資料夾下
-        model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'model', 'hand_landmarker.task')
+        model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'model', 'gaze', 'hand_landmarker.task')
         
         base_options = python.BaseOptions(model_asset_path=model_path)
         options = vision.HandLandmarkerOptions(
