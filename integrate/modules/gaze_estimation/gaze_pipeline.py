@@ -85,24 +85,29 @@ class GazeEstimationPipeline:
         """
         try:
             h, w = frame.shape[:2]
-            
-            # 生成相機內參矩陣
             if camera_matrix is None:
                 camera_matrix = get_default_camera_matrix(w, h)
             
             # Stage 1: 人臉檢測
             face_result = self.face_detector.detect(frame)
             if face_result is None:
-                return {'success': False, 'error': 'Face detection failed'}
+                return {'success': False, 'error': 'YOLO failed'}
+            
+            # 💡 如果特徵點丟失，直接中斷幾何運算，但傳出 face_result 供狀態機盲追蹤
+            if face_result.get('landmarks_2d_selected') is None:
+                return {
+                    'success': False, 
+                    'error': 'Landmarks lost but head locked', 
+                    'face_result': face_result
+                }
             
             # Stage 2: 頭部姿態估計
             pose_result = self.head_pose_estimator.estimate(
                 landmarks_2d=face_result['landmarks_2d_selected'],
                 camera_matrix=camera_matrix
             )
-            if not pose_result['success']:
-                return {'success': False, 'error': 'Head pose estimation failed'}
-            
+
+            # 💡 【核心修復一】將 Stage 3~5 移回正常的 try 區塊內，確保管線暢通
             # Stage 3: 圖像正規化
             norm_result = self.image_normalizer.normalize(
                 image=frame,
@@ -119,14 +124,20 @@ class GazeEstimationPipeline:
                 return {'success': False, 'error': 'Gaze estimation failed'}
             
             # Stage 5: 視線向量轉換
-            gaze_vector = self.gaze_converter.angles_to_vector(
+            gaze_vector_norm = self.gaze_converter.angles_to_vector(
                 pitch=gaze_result['gaze_angles'][0],
                 yaw=gaze_result['gaze_angles'][1]
             )
             
-            # 計算左右眼中心位置（用於視線箭頭繪製）
-            # ETH-XGaze 6點: [33, 133, 362, 263, 61, 291]
-            # 索引: [右眼外, 右眼內, 左眼外, 左眼內, 左嘴角, 右嘴角]
+            # 幾何還原：將視線向量從歸一化空間逆旋轉回原始相機空間
+            if 'R_n' in norm_result:
+                R_n = norm_result['R_n']
+                gaze_vector_orig = np.dot(R_n.T, gaze_vector_norm)
+                gaze_vector = gaze_vector_orig / (np.linalg.norm(gaze_vector_orig) + 1e-6)
+            else:
+                gaze_vector = gaze_vector_norm
+            
+            # 計算左右眼中心位置
             landmarks_selected = face_result['landmarks_2d_selected']
             right_eye_center = ((landmarks_selected[0] + landmarks_selected[1]) / 2).astype(int)
             left_eye_center = ((landmarks_selected[2] + landmarks_selected[3]) / 2).astype(int)
@@ -136,16 +147,19 @@ class GazeEstimationPipeline:
                 'success': True,
                 'gaze_angles': gaze_result['gaze_angles'],
                 'gaze_angles_deg': gaze_result['gaze_angles_deg'],
-                'gaze_vector': gaze_vector,
+                'gaze_vector': gaze_vector,  
                 'face_bbox': face_result['bbox'],
                 'confidence': face_result.get('confidence', 1.0),
                 'head_pose': pose_result['euler_angles'],
                 'landmarks': face_result['landmarks_2d_selected'],
-                'left_eye': tuple(left_eye_center),   # 新增：左眼中心
-                'right_eye': tuple(right_eye_center)  # 新增：右眼中心
+                'left_eye': tuple(left_eye_center),
+                'right_eye': tuple(right_eye_center),
+                # 💡 【核心修復二】將 Stage 1 的關鍵特徵欄位同步封裝至成功字典，供下游狀態機讀取
+                'yolo_head_bbox': face_result.get('yolo_head_bbox'),
+                'num_landmarks': face_result.get('num_landmarks', 468)
             }
             
             return result
-        
+            
         except Exception as e:
             return {'success': False, 'error': str(e)}

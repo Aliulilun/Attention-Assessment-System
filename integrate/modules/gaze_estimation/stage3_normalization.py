@@ -156,7 +156,8 @@ class ImageNormalizer:
                 'head_rot_norm': hR_norm,
                 'face_center_distance': distance,
                 'scale_factor': z_scale,
-                'success': True
+                'R_n': R_n,
+                'success': True # 把歸一化旋轉矩陣傳出去給 Pipeline 逆轉換使用
             }
             
         except Exception as e:

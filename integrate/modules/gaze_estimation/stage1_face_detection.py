@@ -188,8 +188,14 @@ class FaceDetector:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=roi_rgb)
         mp_results = self.face_landmarker.detect(mp_image)
         
+        # 關鍵修復：如果 MediaPipe 沒抓到特徵點，但 YOLO 有抓到頭，依然回傳 YOLO 框供狀態機盲追蹤
         if not mp_results.face_landmarks:
-            return None
+            return {
+                'num_landmarks': 0,
+                'yolo_head_bbox': [x_min, y_min, x_max, y_max], # 已完美還原至 1600x960 全域空間
+                'confidence': confidence,
+                'landmarks_2d_selected': None
+            }
             
         face_landmarks = mp_results.face_landmarks[0]
         
