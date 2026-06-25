@@ -114,12 +114,10 @@ class ModelManager:
         else:
             # 🌟 核心修改：客製化各階段的信心度門檻
             if stage in [1, 2]:
-                # 狗模型特徵較不明顯，我們將門檻下殺到 0.30 把它逼出來！
                 current_conf = 0.7
             elif stage in [6, 7]:
                 current_conf = 0.7
             else:
-                # 其他掛在牆上或明顯的物件維持嚴格標準
                 current_conf = 0.75
             
             results = model.predict(

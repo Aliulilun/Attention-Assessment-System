@@ -16,7 +16,7 @@ def _get_gaze_converter():
     """獲取 GazeVectorConverter 單例"""
     global _gaze_converter
     if _gaze_converter is None:
-        from stages.stage5_gaze_vector import GazeVectorConverter
+        from .stage5_gaze_vector import GazeVectorConverter
         _gaze_converter = GazeVectorConverter()
     return _gaze_converter
 
