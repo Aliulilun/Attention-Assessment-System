@@ -407,6 +407,13 @@ python audio_trigger_pipeline.py --help
   booktitle = {European Conference on Computer Vision (ECCV)},
   year      = {2020}
 }
+@misc{abcfsa2023yolov8,
+  author       = {Abcfsa},
+  title        = {YOLOv8\_head\_detector: Head Detection Model based on YOLOv8},
+  howpublished = {\url{https://github.com/Abcfsa/YOLOv8_head_detector}},
+  year         = {2023},
+  note         = {GitHub Repository}
+}
 ```
 
 ### 參考技術文件
@@ -417,12 +424,18 @@ python audio_trigger_pipeline.py --help
 - **OpenCV solvePnP**: [官方文件](https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html)
 - **OpenAI Whisper**: [GitHub](https://github.com/openai/whisper)
 - **Ultralytics YOLO**: [官方文件](https://docs.ultralytics.com/)
+- **YOLOv8 Head Detector**: [GitHub](https://github.com/Abcfsa/YOLOv8_head_detector) (by Abcfsa)
 
 ---
 
 ## 12. 授權聲明 (License)
 
 本專案程式碼供**學術研究與教育用途**。
+
+### 開源模型致謝
+
+本專案之視覺偵測模組深度受益於開源社群的貢獻，在此特別感謝下列的開源專案與模型：
+- **YOLOv8_head_detector** (`https://github.com/Abcfsa/YOLOv8_head_detector`): 本系統之頭部偵測核心技術與預訓練權重源自開發者 **Abcfsa** 的開源成果。該模型的優異性能顯著提升了本平台在人臉/頭部偵測階段（Stage 1）的強健性與辨識效率，在此致以誠摯的感謝。
 
 - **ETH-XGaze 預訓練模型**：遵循 ETH-XGaze 原始授權條款（Xucong Zhang et al., ECCV 2020）
 - **MediaPipe**：Apache License 2.0
