@@ -153,6 +153,11 @@ def main():
     prev_keyword_state = False  
     prev_child_hit_state = False 
     prev_gaze_state = False  
+    prev_tester_gaze_state = False # 💡 新增：追蹤是否正在看施測者
+
+    # 💡 動態同步 interaction.py 的場地界線 (左側 35% 區域)
+    divider_x = int(frame_w * 0.35)
+    TESTER_ZONE_BBOX = [0, 0, divider_x, frame_h]
 
     print("\n>>> [系統] 開始進入主分析迴圈...")
     try:
@@ -196,11 +201,12 @@ def main():
             except Exception as e:
                 print(f"⚠️ 偵測跳過 (Frame {frame_count}): {e}")
 
-# ==================================================
+            # ==================================================
             # 3. 👁️ 核心整合重構：視線估計與時序狀態機幾何級聯 (修復版)
             # ==================================================
             gaze_result = None
             child_is_gazing_at = False 
+            child_is_gazing_at_tester = False  #每一幀都初始化為 False
             
             # 💡 【核心修復一】先初始化為 None，避免在 Pipeline 執行前對 None 呼叫 .get() 導致閃退
             face_result_for_fsm = None
@@ -217,6 +223,8 @@ def main():
                             pitch_rad = gaze_result['gaze_angles'][0]
                             yaw_rad = gaze_result['gaze_angles'][1]
                             gaze_vector = gaze_result['gaze_vector']
+                            pitch_deg = gaze_result['gaze_angles_deg'][0]
+                            yaw_deg = gaze_result['gaze_angles_deg'][1]
                             confidence = gaze_result.get('confidence', 0.0)
                             left_eye = gaze_result.get('left_eye')
                             right_eye = gaze_result.get('right_eye')
@@ -230,15 +238,27 @@ def main():
                                 )
                             
                             # 標準幾何射線要求（Ray Casting 碰撞判定）
+                            # 1. 判定是否命中桌上物品
                             if current_stage > 0 and len(yolo_boxes) > 0:
                                 child_is_gazing_at = check_gaze_on_objects(gaze_result, yolo_boxes)
-                                
-                                # 如果精確命中物體，繪製黃框與小尺寸精緻字體高亮
                                 if child_is_gazing_at:
                                     for box in yolo_boxes:
                                         if is_gazing_at_box(gaze_result, box):
                                             cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 255), 5)
                                             cv2.putText(frame, "GAZING!", (int(box[0]), int(box[1])-15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                            
+                            # 2. 💡 【新增】判定是否與施測者眼神交會 (Gazing At Tester)
+                            child_is_gazing_at_tester = False
+                            # 先利用 Ray-Casting 確認視線穿過畫面左側 35% 的區域
+                            if is_gazing_at_box(gaze_result, TESTER_ZONE_BBOX):
+                                # 再加入嚴格的角度閾值：Pitch > -5 且 Yaw > 10
+                                if pitch_deg > -5 and yaw_deg > 10:
+                                    child_is_gazing_at_tester = True
+                                    # 繪製視覺化提示 (粉紅色框與文字)
+                                    cv2.rectangle(frame, (TESTER_ZONE_BBOX[0], TESTER_ZONE_BBOX[1]), 
+                                                  (TESTER_ZONE_BBOX[2], TESTER_ZONE_BBOX[3]), (0, 0, 0), 3)
+                                    cv2.putText(frame, "GAZING AT TESTER!", (TESTER_ZONE_BBOX[0]+250, TESTER_ZONE_BBOX[1]+30), 
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
                             
                             # 💡 【核心修復二】完整封裝傳遞給狀態機的 3D 姿態與特徵，必須同步帶入 num_landmarks，防止 KeyError 閃退
                             face_result_for_fsm = {
@@ -280,12 +300,13 @@ def main():
             # ==================================================
             # 聽覺模組狀態邊緣觸發紀錄 (新時間窗開啟點)
             if is_in_trigger_window and not prev_keyword_state:
-                event_logs.append(f"[{current_time_sec:.1f}s] 觸發：偵測到引導語音關鍵字，開啟 3 秒高靈敏注意力判定窗")
+                event_logs.append(f"[{current_time_sec:.2f}s] 觸發：偵測到引導語音關鍵字，開啟 3 秒高靈敏注意力判定窗")
                 
                 # 在時間窗開啟的瞬間，強制重置狀態基準
                 # 消除「持續性行為盲區」：確保如果小朋友提早看/指著，進入時間窗的第一幀也能被精確紀錄！
                 prev_child_hit_state = False
                 prev_gaze_state = False
+                prev_tester_gaze_state = False # 同步重置 Tester 狀態
                 
             prev_keyword_state = is_in_trigger_window
 
@@ -294,15 +315,19 @@ def main():
                 
                 # 手勢指向事件追蹤 (僅在時間窗內進行邊緣觸發判定)
                 if child_is_pointing_hit and not prev_child_hit_state:
-                    event_logs.append(f"[{current_time_sec:.1f}s] 互動成功：小朋友手勢精確指向 Stage {current_stage} 的目標物品")
+                    event_logs.append(f"[{current_time_sec:.2f}s] 互動成功：小朋友手勢精確指向 Stage {current_stage} 的目標物品")
                 
                 # 視線注視事件追蹤 (支援情況 A 的 Ray Casting 與情況 B 的狀態機代償)
                 if child_is_gazing_at and not prev_gaze_state:
-                    event_logs.append(f"[{current_time_sec:.1f}s] 注視成功：小朋友視線 (Ray-Casting) 命中 Stage {current_stage} 的目標物品")
+                    event_logs.append(f"[{current_time_sec:.2f}s] 注視成功：小朋友視線 (Ray-Casting) 命中 Stage {current_stage} 的目標物品")
+                # 眼神注視施測者事件寫入
+                if child_is_gazing_at_tester and not prev_tester_gaze_state:
+                    event_logs.append(f"[{current_time_sec:.2f}s] 眼神交會：Gazing At Tester (P={pitch_deg:.1f}°, Y={yaw_deg:.1f}°)")
             
             # 狀態更新，用於下一幀的判定基準
             prev_child_hit_state = child_is_pointing_hit
             prev_gaze_state = child_is_gazing_at
+            prev_tester_gaze_state = child_is_gazing_at_tester
 
 
             # 5. 🖥️ 左上角 UI 資訊面板繪製

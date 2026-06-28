@@ -28,6 +28,8 @@ gaze_estimation:
     input_size: [224, 224]
     normalize_mean: [0.485, 0.456, 0.406]
     normalize_std: [0.229, 0.224, 0.225]
+  calibration:
+    pitch_offset_deg: -10.5  # 請根據您實驗室觀察到的平均負值偏移量進行修改
 
 # ==================== YOLO 模型配置 ====================
 yolo_models:
@@ -65,7 +67,7 @@ output:
   
 # ==================== 影片處理配置 ====================
 video:
-  input_path: "video/video3.mp4"
+  input_path: "video/video10.mp4"
   fps: 30
   preview_window: "Multi-Modal AI System Preview"
   preview_size: [1280, 720]

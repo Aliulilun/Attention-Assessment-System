@@ -39,6 +39,17 @@ class GazeEstimationPipeline:
         self.gaze_estimator = GazeEstimator(config=config.get('model', {}))
         self.gaze_converter = GazeVectorConverter()
         
+        # ==================================================
+        #  新增：載入基準校正參數 (Baseline Calibration)
+        # 直接使用傳入的 config 字典，保持架構簡潔
+        # ==================================================
+        calib_config = config.get('calibration', {})
+        self.pitch_offset_deg = calib_config.get('pitch_offset_deg', 0.0) # μ_pitch (單位：度)
+        self.pitch_offset_rad = np.radians(self.pitch_offset_deg)         # 轉為弧度
+        
+        if self.pitch_offset_deg != 0.0:
+            print(f">>> [GazeEstimation] 已啟用基準校正：Pitch 偏移量 = {self.pitch_offset_deg}°")
+        
         print(">>> [GazeEstimation] 視線估計模組載入完成！")
     
     def _get_default_config(self):
@@ -62,6 +73,10 @@ class GazeEstimationPipeline:
             'model': {
                 'model_path': 'model/gaze/epoch_24_ckpt.pth.tar',
                 'use_gpu': True
+            },
+            #  新增：防呆預設校正參數區塊
+            'calibration': {
+                'pitch_offset_deg': 0.0  
             }
         }
     
@@ -93,7 +108,7 @@ class GazeEstimationPipeline:
             if face_result is None:
                 return {'success': False, 'error': 'YOLO failed'}
             
-            # 💡 如果特徵點丟失，直接中斷幾何運算，但傳出 face_result 供狀態機盲追蹤
+            #  如果特徵點丟失，直接中斷幾何運算，但傳出 face_result 供狀態機盲追蹤
             if face_result.get('landmarks_2d_selected') is None:
                 return {
                     'success': False, 
@@ -107,7 +122,7 @@ class GazeEstimationPipeline:
                 camera_matrix=camera_matrix
             )
 
-            # 💡 【核心修復一】將 Stage 3~5 移回正常的 try 區塊內，確保管線暢通
+            #  【核心修復一】將 Stage 3~5 移回正常的 try 區塊內，確保管線暢通
             # Stage 3: 圖像正規化
             norm_result = self.image_normalizer.normalize(
                 image=frame,
@@ -122,6 +137,16 @@ class GazeEstimationPipeline:
             gaze_result = self.gaze_estimator.estimate(norm_result['normalized_image'])
             if not gaze_result['success']:
                 return {'success': False, 'error': 'Gaze estimation failed'}
+            # ==================================================
+            #  【核心邏輯】：基準校正 (Baseline Calibration)
+            # 數學公式: Pitch_calibrated = Pitch_raw - μ_pitch
+            # ==================================================
+            if self.pitch_offset_rad != 0.0:
+                # 扣除弧度偏移 (pitch 為索引 0)
+                gaze_result['gaze_angles'][0] -= self.pitch_offset_rad
+                # 同步扣除角度偏移
+                gaze_result['gaze_angles_deg'][0] -= self.pitch_offset_deg
+            # ==================================================
             
             # Stage 5: 視線向量轉換
             gaze_vector_norm = self.gaze_converter.angles_to_vector(
@@ -154,7 +179,7 @@ class GazeEstimationPipeline:
                 'landmarks': face_result['landmarks_2d_selected'],
                 'left_eye': tuple(left_eye_center),
                 'right_eye': tuple(right_eye_center),
-                # 💡 【核心修復二】將 Stage 1 的關鍵特徵欄位同步封裝至成功字典，供下游狀態機讀取
+                #  【核心修復二】將 Stage 1 的關鍵特徵欄位同步封裝至成功字典，供下游狀態機讀取
                 'yolo_head_bbox': face_result.get('yolo_head_bbox'),
                 'num_landmarks': face_result.get('num_landmarks', 468)
             }
