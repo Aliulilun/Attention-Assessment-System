@@ -1,1 +1,3 @@
 train by B1229011
+
+scoring_system為評分系統初期開發

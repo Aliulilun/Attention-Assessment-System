@@ -5,7 +5,6 @@
 
 # =========================
 # But allow Git to enter folders
-# This is important, otherwise Git cannot find best.pt / last.pt inside subfolders
 # =========================
 !*/
 
@@ -14,6 +13,17 @@
 # =========================
 !**/best.pt
 !**/last.pt
+
+# =========================
+# Keep scoring system files
+# =========================
+!scoring/**
+!scoring/**/*.py
+!scoring/**/*.yaml
+!scoring/**/*.yml
+!scoring/**/*.txt
+!scoring/**/*.md
+!scoring/**/*.json
 
 # =========================
 # Keep basic repo files
