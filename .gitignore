@@ -9,21 +9,20 @@
 !*/
 
 # =========================
+# Fully ignore model_test (nothing inside should ever be uploaded)
+# =========================
+model_test/
+
+# =========================
 # Keep trained YOLO model weights only
 # =========================
 !**/best.pt
 !**/last.pt
 
 # =========================
-# Keep scoring system files
+# Keep code folder (scoring_system + signboard_system, etc.)
 # =========================
-!scoring/**
-!scoring/**/*.py
-!scoring/**/*.yaml
-!scoring/**/*.yml
-!scoring/**/*.txt
-!scoring/**/*.md
-!scoring/**/*.json
+!code/**
 
 # =========================
 # Keep basic repo files

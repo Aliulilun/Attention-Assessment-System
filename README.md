@@ -1,3 +1,4 @@
-train by B1229011
+Add/edit by B1229011
 
-scoring_system為評分系統初期開發
+model裡面yolo模型
+code裡面是優化/重構的程式
