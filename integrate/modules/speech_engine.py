@@ -48,6 +48,13 @@ DIGIT_CANONICAL_MAP = str.maketrans(
     }
 )
 
+COUNTDOWN_NORMALIZED_KEYWORDS = {"321"}
+COUNTDOWN_FRAGMENT_KEYWORDS = {"1", "2", "3"}
+SHORT_KEYWORD_MIN_CONTEXT_LEN = 2
+
+# 【第 10 版：字級時間戳安全防護版】
+MATCHING_ALGORITHM_VERSION = 10
+
 
 @dataclass
 class SpeechConfig:
@@ -63,20 +70,25 @@ class SpeechConfig:
     time_offset_sec: float = 0.0
     keywords: Tuple[str, ...] = tuple(DEFAULT_KEYWORDS)
     speech_context_gap_sec: float = 0.8
-    keyword_max_edit_distance: int = 1
+    
+    # 強制 0 容錯 (確保不會誤判你好)
+    keyword_max_edit_distance: int = 0
+    
     skip_whisper: bool = False
     noise_trigger_enabled: bool = True
     noise_sample_rate: int = 16000
     noise_frame_sec: float = 0.10
     noise_hop_sec: float = 0.05
-    noise_min_duration_sec: float = 0.35
-    noise_merge_gap_sec: float = 0.20
-    noise_low_band_hz: float = 1500.0
-    noise_high_band_hz: float = 4500.0
-    noise_flatness_max: float = 0.42
-    noise_dominant_jump_hz: float = 280.0
-    noise_dominant_std_max: float = 220.0
-    force_rebuild: bool = False
+    
+    # 怪聲偵測參數
+    noise_min_duration_sec: float = 0.4       
+    noise_merge_gap_sec: float = 0.5          
+    noise_low_band_hz: float = 1000.0          
+    noise_high_band_hz: float = 5000.0        
+    noise_flatness_max: float = 0.45           
+    noise_dominant_jump_hz: float = 500.0    
+    noise_dominant_std_max: float = 400.0
+    force_rebuild: bool = True
 
 
 def parse_args() -> argparse.Namespace:
@@ -153,7 +165,7 @@ def build_config(args: argparse.Namespace) -> SpeechConfig:
         keywords=tuple(args.keywords or DEFAULT_KEYWORDS),
         skip_whisper=args.skip_whisper,
         noise_trigger_enabled=not args.disable_noise_trigger,
-        force_rebuild=args.force,
+        force_rebuild=True, 
     )
 
 
@@ -171,6 +183,8 @@ def get_video_signature(video_path: str) -> Dict[str, Any]:
 
 
 def normalize_text(text: str) -> str:
+    if not text:
+        return ""
     text = text.strip().lower()
     text = text.translate(TEXT_CANONICAL_MAP)
     text = re.sub(r"\s+", "", text)
@@ -190,71 +204,33 @@ def apply_time_offset(seconds: float, config: SpeechConfig) -> float:
     return round(max(0.0, seconds + config.time_offset_sec), 3)
 
 
-def levenshtein_distance(text_a: str, text_b: str) -> int:
-    if text_a == text_b:
-        return 0
-    if not text_a:
-        return len(text_b)
-    if not text_b:
-        return len(text_a)
-
-    previous_row = list(range(len(text_b) + 1))
-    for index_a, char_a in enumerate(text_a, start=1):
-        current_row = [index_a]
-        for index_b, char_b in enumerate(text_b, start=1):
-            insert_cost = current_row[index_b - 1] + 1
-            delete_cost = previous_row[index_b] + 1
-            replace_cost = previous_row[index_b - 1] + (char_a != char_b)
-            current_row.append(min(insert_cost, delete_cost, replace_cost))
-        previous_row = current_row
-    return previous_row[-1]
+def is_countdown_keyword(normalized_keyword: str) -> bool:
+    return normalized_keyword in COUNTDOWN_NORMALIZED_KEYWORDS
 
 
-def has_near_match(
+def is_countdown_fragment_keyword(normalized_keyword: str) -> bool:
+    return normalized_keyword in COUNTDOWN_FRAGMENT_KEYWORDS
+
+
+def is_digit_char(char: str) -> bool:
+    return char.isdigit()
+
+
+def is_valid_keyword_occurrence(
     normalized_text: str,
     normalized_keyword: str,
-    max_edit_distance: int,
+    start_index: int,
+    end_index: int,
 ) -> bool:
-    if normalized_keyword in normalized_text:
-        return True
+    if is_countdown_keyword(normalized_keyword):
+        before = normalized_text[start_index - 1] if start_index > 0 else ""
+        after = normalized_text[end_index] if end_index < len(normalized_text) else ""
+        return not is_digit_char(before) and not is_digit_char(after)
 
-    if max_edit_distance <= 0 or not normalized_text or not normalized_keyword:
+    if is_countdown_fragment_keyword(normalized_keyword):
         return False
 
-    if min(len(normalized_text), len(normalized_keyword)) < 3:
-        return False
-
-    if abs(len(normalized_text) - len(normalized_keyword)) > max_edit_distance + 1:
-        return False
-
-    return (
-        levenshtein_distance(normalized_text, normalized_keyword)
-        <= max_edit_distance
-    )
-
-
-def find_trigger_keywords(
-    text_candidates: Sequence[str],
-    keywords: Sequence[str],
-    max_edit_distance: int,
-) -> List[str]:
-    found: List[str] = []
-    normalized_candidates = [
-        normalize_text(candidate) for candidate in text_candidates if candidate
-    ]
-
-    for keyword in keywords:
-        normalized_keyword = normalize_text(keyword)
-        if not normalized_keyword:
-            continue
-
-        if any(
-            has_near_match(candidate, normalized_keyword, max_edit_distance)
-            for candidate in normalized_candidates
-        ):
-            found.append(keyword)
-
-    return found
+    return True
 
 
 def find_boundary_keywords(
@@ -273,6 +249,8 @@ def find_boundary_keywords(
         normalized_keyword = normalize_text(keyword)
         if len(normalized_keyword) < 2:
             continue
+        if is_countdown_fragment_keyword(normalized_keyword):
+            continue
 
         if normalized_keyword in current_normalized:
             continue
@@ -285,6 +263,20 @@ def find_boundary_keywords(
             if current_normalized.endswith(prefix) and next_normalized.startswith(
                 suffix
             ):
+                if is_countdown_keyword(normalized_keyword):
+                    prefix_start = len(current_normalized) - len(prefix)
+                    before = (
+                        current_normalized[prefix_start - 1]
+                        if prefix_start > 0
+                        else ""
+                    )
+                    after = (
+                        next_normalized[len(suffix)]
+                        if len(next_normalized) > len(suffix)
+                        else ""
+                    )
+                    if is_digit_char(before) or is_digit_char(after):
+                        continue
                 found.append(keyword)
                 break
 
@@ -306,8 +298,16 @@ def build_direct_keyword_events(
     record: Dict[str, Any],
     config: SpeechConfig,
 ) -> List[Dict[str, Any]]:
-    normalized_text = normalize_text(record["text"])
+    # 【安全防護】：確保 record["text"] 不是 None
+    raw_text = record.get("text", "")
+    if not raw_text:
+        return []
+
+    normalized_text = normalize_text(raw_text)
     if not normalized_text:
+        return []
+
+    if "你好" in normalized_text and not any(k in normalized_text for k in ["你看", "準備", "開始", "看這裡"]):
         return []
 
     candidates: List[Dict[str, Any]] = []
@@ -315,75 +315,90 @@ def build_direct_keyword_events(
         normalized_keyword = normalize_text(keyword)
         if not normalized_keyword:
             continue
+        if is_countdown_fragment_keyword(normalized_keyword):
+            continue
 
         for start_index in find_all_occurrences(normalized_text, normalized_keyword):
+            end_index = start_index + len(normalized_keyword)
+            if not is_valid_keyword_occurrence(
+                normalized_text,
+                normalized_keyword,
+                start_index,
+                end_index,
+            ):
+                continue
             candidates.append(
                 {
                     "start_index": start_index,
-                    "end_index": start_index + len(normalized_keyword),
+                    "end_index": end_index,
                     "keyword": keyword,
                     "normalized_keyword": normalized_keyword,
                 }
             )
 
-    if candidates:
-        candidates.sort(
-            key=lambda item: (
-                -(item["end_index"] - item["start_index"]),
-                item["start_index"],
-                item["keyword"],
-            )
+    if not candidates:
+        return []
+
+    candidates.sort(
+        key=lambda item: (
+            -(item["end_index"] - item["start_index"]),
+            item["start_index"],
+            item["keyword"],
         )
-        accepted: List[Dict[str, Any]] = []
-        occupied_positions: Set[int] = set()
-        for candidate in candidates:
-            span = set(range(candidate["start_index"], candidate["end_index"]))
-            if span & occupied_positions:
-                same_span = [
-                    item
-                    for item in accepted
-                    if item["start_index"] == candidate["start_index"]
-                    and item["end_index"] == candidate["end_index"]
-                ]
-                if same_span:
+    )
+    accepted: List[Dict[str, Any]] = []
+    occupied_positions: Set[int] = set()
+    for candidate in candidates:
+        span = set(range(candidate["start_index"], candidate["end_index"]))
+        if span & occupied_positions:
+            same_span = [
+                item
+                for item in accepted
+                if item["start_index"] == candidate["start_index"]
+                and item["end_index"] == candidate["end_index"]
+            ]
+            if same_span:
+                if candidate["keyword"] not in same_span[0]["keywords"]:
                     same_span[0]["keywords"].append(candidate["keyword"])
-                continue
+            continue
 
-            accepted.append(
-                {
-                    "start_index": candidate["start_index"],
-                    "end_index": candidate["end_index"],
-                    "keywords": [candidate["keyword"]],
-                }
-            )
-            occupied_positions.update(span)
-    else:
-        accepted = []
-        for keyword in config.keywords:
-            normalized_keyword = normalize_text(keyword)
-            if has_near_match(
-                normalized_text,
-                normalized_keyword,
-                config.keyword_max_edit_distance,
-            ):
-                accepted.append(
-                    {
-                        "start_index": 0,
-                        "end_index": max(1, len(normalized_text)),
-                        "keywords": [keyword],
-                    }
-                )
+        accepted.append(
+            {
+                "start_index": candidate["start_index"],
+                "end_index": candidate["end_index"],
+                "keywords": [candidate["keyword"]],
+                "normalized_keyword": candidate["normalized_keyword"]
+            }
+        )
+        occupied_positions.update(span)
 
-    segment_start = float(record["raw_start"])
-    segment_end = float(record["raw_end"])
+    # 【安全防護】：確保 start 和 end 是數字
+    segment_start = float(record.get("raw_start", 0.0))
+    segment_end = float(record.get("raw_end", segment_start))
     segment_duration = max(0.0, segment_end - segment_start)
     normalized_length = max(1, len(normalized_text))
 
     trigger_events: List[Dict[str, Any]] = []
     for index, match in enumerate(sorted(accepted, key=lambda item: item["start_index"])):
-        estimated_raw_start = segment_start + (
-            match["start_index"] / normalized_length
-        ) * segment_duration
+        
+        estimated_raw_start = segment_start + (match["start_index"] / normalized_length) * segment_duration
+        
+        # 【核心容錯防護】：安全提取 words 陣列，避免 KeyError: 'text'
+        words_list = record.get("words", [])
+        if words_list:
+            for w in words_list:
+                # 確保 w 有 text 且不是 None
+                w_text_raw = w.get("text", "")
+                if not w_text_raw:
+                    continue
+                
+                w_text_norm = normalize_text(w_text_raw)
+                if w_text_norm and (w_text_norm in match["normalized_keyword"] or match["normalized_keyword"] in w_text_norm):
+                    # 確保 w 有 start 屬性
+                    if "start" in w:
+                        estimated_raw_start = float(w["start"])
+                        break
+        
         event_start = apply_time_offset(estimated_raw_start, config)
         event_end = apply_time_offset(
             estimated_raw_start + config.response_window_sec,
@@ -391,7 +406,7 @@ def build_direct_keyword_events(
         )
         trigger_events.append(
             {
-                "id": f"speech_{record['id']}_{index + 1:02d}",
+                "id": f"speech_{record.get('id', '000')}_{index + 1:02d}",
                 "event_type": "speech",
                 "keywords": sorted(set(match["keywords"])),
                 "match_source": "direct",
@@ -409,25 +424,33 @@ def build_boundary_keyword_events(
     next_record: Dict[str, Any],
     config: SpeechConfig,
 ) -> List[Dict[str, Any]]:
-    if next_record["raw_start"] - record["raw_end"] > config.speech_context_gap_sec:
+    # 安全防護
+    r_end = float(record.get("raw_end", 0.0))
+    nr_start = float(next_record.get("raw_start", 0.0))
+
+    if nr_start - r_end > config.speech_context_gap_sec:
         return []
 
+    r_text = record.get("text", "")
+    nr_text = next_record.get("text", "")
+
     found_keywords = find_boundary_keywords(
-        record["text"],
-        next_record["text"],
+        r_text,
+        nr_text,
         config.keywords,
     )
     if not found_keywords:
         return []
 
-    event_start = apply_time_offset(float(record["raw_start"]), config)
+    r_start = float(record.get("raw_start", 0.0))
+    event_start = apply_time_offset(r_start, config)
     event_end = apply_time_offset(
-        float(record["raw_start"]) + config.response_window_sec,
+        r_start + config.response_window_sec,
         config,
     )
     return [
         {
-            "id": f"speech_{record['id']}_context",
+            "id": f"speech_{record.get('id', '000')}_context",
             "event_type": "speech",
             "keywords": sorted(set(found_keywords)),
             "match_source": "context",
@@ -458,52 +481,7 @@ def merge_overlapping_windows(
 
 
 def is_cache_valid(cache_data: Dict[str, Any], config: SpeechConfig) -> bool:
-    expected_signature = get_video_signature(config.video_path)
-    cached_signature = cache_data.get("video_signature")
-    cached_config = cache_data.get("config", {})
-
-    if cached_signature != expected_signature:
-        return False
-
-    checks = {
-        "model_name": config.model_name,
-        "language": config.language,
-        "time_offset_sec": config.time_offset_sec,
-        "speech_context_gap_sec": config.speech_context_gap_sec,
-        "keyword_max_edit_distance": config.keyword_max_edit_distance,
-        "skip_whisper": config.skip_whisper,
-        "noise_trigger_enabled": config.noise_trigger_enabled,
-        "noise_sample_rate": config.noise_sample_rate,
-        "noise_frame_sec": config.noise_frame_sec,
-        "noise_hop_sec": config.noise_hop_sec,
-        "noise_min_duration_sec": config.noise_min_duration_sec,
-        "noise_merge_gap_sec": config.noise_merge_gap_sec,
-        "noise_low_band_hz": config.noise_low_band_hz,
-        "noise_high_band_hz": config.noise_high_band_hz,
-        "noise_flatness_max": config.noise_flatness_max,
-        "noise_dominant_jump_hz": config.noise_dominant_jump_hz,
-        "noise_dominant_std_max": config.noise_dominant_std_max,
-    }
-
-    for key, expected_value in checks.items():
-        cached_value = cached_config.get(key)
-        if cached_value is None:
-            return False
-        if isinstance(expected_value, float):
-            if float(cached_value) != float(expected_value):
-                return False
-        elif cached_value != expected_value:
-            return False
-
-    if float(cached_config.get("response_window_sec", -1)) != float(
-        config.response_window_sec
-    ):
-        return False
-
-    if tuple(cached_config.get("keywords", [])) != tuple(config.keywords):
-        return False
-
-    return True
+    return False
 
 
 def load_cache(config: SpeechConfig) -> Optional[Dict[str, Any]]:
@@ -537,11 +515,16 @@ def transcribe_with_whisper(config: SpeechConfig) -> Dict[str, Any]:
     model = whisper.load_model(config.model_name, device="cpu")
 
     print(">> 開始進行語音辨識...")
+    
     result = model.transcribe(
         config.video_path,
         language=config.language,
+        initial_prompt="這是一段早療評估影片。請精確逐字記錄治療師的獨立指令，包含：你看、看這裡、準備、開始、321。請勿忽略短促的聲音，不要與雜音合併。",
+        temperature=0.0,
         condition_on_previous_text=False,
-        no_speech_threshold=0.4,
+        no_speech_threshold=0.3,
+        logprob_threshold=-2.0,
+        word_timestamps=True, 
         compression_ratio_threshold=2.4,
         fp16=False,
         verbose=False,
@@ -557,37 +540,35 @@ def build_segment_records(
     last_normalized_text = ""
 
     for segment in segments:
-        start_time = float(segment["start"])
-        end_time = float(segment["end"])
-        text = str(segment["text"]).strip()
+        # 安全防護
+        start_time = float(segment.get("start", 0.0))
+        end_time = float(segment.get("end", start_time))
+        text = str(segment.get("text", "")).strip()
 
         if not text:
             continue
 
         normalized_text = normalize_text(text)
         
-        # 【修改重點】：判斷當前句子是否包含我們定義的關鍵字
         has_keyword = any(normalize_text(kw) in normalized_text for kw in config.keywords)
         
-        # 避免 Whisper 幻覺：但如果該句「包含關鍵字」，就算與上一句重複也絕對保留
         if normalized_text and normalized_text == last_normalized_text and not has_keyword:
             continue
             
         last_normalized_text = normalized_text
 
-        raw_start_time = float(segment["start"])
-        raw_end_time = float(segment["end"])
-        display_start_time = apply_time_offset(raw_start_time, config)
-        display_end_time = apply_time_offset(raw_end_time, config)
+        display_start_time = apply_time_offset(start_time, config)
+        display_end_time = apply_time_offset(end_time, config)
 
         records.append(
             {
                 "id": f"{len(records) + 1:04d}",
-                "raw_start": round(raw_start_time, 3),
-                "raw_end": round(raw_end_time, 3),
+                "raw_start": round(start_time, 3),
+                "raw_end": round(end_time, 3),
                 "start": display_start_time,
                 "end": display_end_time,
                 "text": text,
+                "words": segment.get("words", []), # 儲存字級時間戳供後續安全取用
                 "keywords": [],
                 "trigger_events": [],
                 "event_type": "speech",
@@ -826,10 +807,10 @@ def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
         peak_ratios.append(peak_ratio)
         flatness_values.append(target_flatness)
 
-    rms_threshold = max(0.01, percentile_value(rms_values, 75) * 1.10)
-    band_ratio_threshold = max(0.24, percentile_value(band_ratios, 82))
-    peak_ratio_threshold = max(3.5, percentile_value(peak_ratios, 82))
-    flatness_threshold = min(config.noise_flatness_max, percentile_value(flatness_values, 45))
+    rms_threshold = max(0.015, percentile_value(rms_values, 50) * 1.5)
+    band_ratio_threshold = max(0.3, percentile_value(band_ratios, 50))
+    peak_ratio_threshold = max(2.0, percentile_value(peak_ratios, 50))
+    flatness_threshold = min(config.noise_flatness_max, percentile_value(flatness_values, 60))
 
     candidates: List[Dict[str, float]] = []
     for metric in frame_metrics:
@@ -871,14 +852,12 @@ def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
     for index, event in enumerate(grouped, start=1):
         raw_start_time = float(event["start"])
         raw_end_time = float(event["end"])
-        trigger_raw_end = max(
-            raw_end_time,
-            raw_start_time + config.response_window_sec,
-        )
         start_time = apply_time_offset(raw_start_time, config)
         end_time = apply_time_offset(raw_end_time, config)
-        trigger_start = apply_time_offset(raw_start_time, config)
-        trigger_end = apply_time_offset(trigger_raw_end, config)
+        
+        trigger_start = start_time
+        trigger_end = end_time
+        
         noise_events.append(
             {
                 "id": f"noise_{index:03d}",
@@ -932,6 +911,7 @@ def save_cache(
             "noise_flatness_max": config.noise_flatness_max,
             "noise_dominant_jump_hz": config.noise_dominant_jump_hz,
             "noise_dominant_std_max": config.noise_dominant_std_max,
+            "matching_algorithm_version": MATCHING_ALGORITHM_VERSION,
         },
         "segment_records": list(segment_records),
         "noise_events": list(noise_events),
@@ -1035,7 +1015,6 @@ def load_or_build_analysis(
 
     noise_events = detect_noise_events(config)
     
-    # 【修改重點】：怪聲偵測只需要「一個」判定視窗，取特徵分數最高的事件
     if noise_events:
         best_noise_event = max(noise_events, key=lambda x: x["score"])
         noise_events = [best_noise_event]

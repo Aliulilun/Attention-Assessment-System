@@ -31,7 +31,11 @@ class ModelManager:
             5: "balloon_model.pt",
             6: "doll_model.pt",        
             7: "toy_model.pt",
-            8: "robot_point_model.pt"  
+            9: "tablet_model.pt",
+            11: "front_model.pt",       # ✅ 新增：第 11~12 階段 (前方物品)
+            12: "front_model.pt",
+            13: "background_model.pt",  # ✅ 新增：第 13~14 階段 (背景物品)
+            14: "background_model.pt"
         }
 
     def _get_model(self, model_name):
@@ -51,75 +55,61 @@ class ModelManager:
 
     def detect_objects(self, frame, stage):
         """
-        執行 YOLO 偵測，並回傳物件框的座標陣列
+        執行 YOLO 偵測。
+        - 階段 1~8：回傳目標物 boxes (單一 list)
+        - 階段 9~14：回傳 (target_boxes, robot_boxes) 雙框 tuple，提供主程式做 TH 判定
         """
-        model_name = self.stage_model_map.get(stage)
-        if not model_name:
-            return []
-
-        model = self._get_model(model_name)
-        if not model:
-            return []
 
         # ==========================================
-        # 🤖 第八階段：機器人專屬指向判定與繪圖
+        # 🤖 階段 9 ~ 14：雙模型並行派發 (目標物 + 機器人)
         # ==========================================
-        if stage == 8:
-            results = model.predict(
-                source=frame, 
-                conf=0.6, 
-                iou=0.5, 
-                imgsz=960, 
-                device=0 if self.use_cuda else "cpu",
-                half=self.use_cuda,
-                verbose=False
-            )
+        if stage >= 9:
+            target_boxes = []
+            robot_boxes = []
 
-            if results and len(results) > 0:
-                r = results[0]
-                if r.keypoints is not None and r.boxes is not None:
-                    boxes = r.boxes.xyxy.cpu().numpy()
-                    confs = r.boxes.conf.cpu().numpy()
-                    kpts = r.keypoints.xy.cpu().numpy()
-                    
-                    for i in range(len(boxes)):
-                        bx1, by1, bx2, by2 = boxes[i]
-                        box_conf = confs[i]
+            # 1. 取得當前階段的「目標物」模型與框 (平板、前方物件或背景物件)
+            target_model_name = self.stage_model_map.get(stage)
+            if target_model_name:
+                target_model = self._get_model(target_model_name)
+                if target_model:
+                    results = target_model.predict(
+                        source=frame, conf=0.75, imgsz=960, 
+                        device=0 if self.use_cuda else "cpu", half=self.use_cuda, verbose=False
+                    )
+                    if results and len(results) > 0:
+                        for box in results[0].boxes.xyxy.cpu().numpy():
+                            target_boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+
+            # 2. 獨立取得「機器人」模型與框 (供 TH 判定用)
+            robot_model = self._get_model("robot_model.pt") # ✅ 導入新創立的純偵測模型
+            if robot_model:
+                robot_results = robot_model.predict(
+                    source=frame, conf=0.6, imgsz=960, # 機器人信心度設為 0.6，可視情況微調
+                    device=0 if self.use_cuda else "cpu", half=self.use_cuda, verbose=False
+                )
+                if robot_results and len(robot_results) > 0:
+                    for box in robot_results[0].boxes.xyxy.cpu().numpy():
+                        robot_boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
                         
-                        cx = int((bx1 + bx2) / 2)
-                        cy = int((by1 + by2) / 2)
-                        
-                        cv2.rectangle(frame, (int(bx1), int(by1)), (int(bx2), int(by2)), (255, 100, 100), 2)
-                        cv2.putText(frame, f"Robot Conf: {box_conf:.2f}", (int(bx1), int(by1)-10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 100, 100), 2)
-
-                        if i < len(kpts) and len(kpts[i]) > 0:
-                            tx, ty = int(kpts[i][0][0]), int(kpts[i][0][1])
-                            if tx > 0 and ty > 0:
-                                cv2.circle(frame, (cx, cy), 6, (0, 255, 255), -1) 
-                                cv2.circle(frame, (tx, ty), 6, (0, 0, 255), -1)   
-                                
-                                vec = np.array([tx, ty]) - np.array([cx, cy])
-                                if np.linalg.norm(vec) > 0:
-                                    unit_vec = vec / np.linalg.norm(vec)
-                                    end_point = np.array([tx, ty]) + unit_vec * 1500 
-                                    
-                                    cv2.line(frame, (cx, cy), (int(end_point[0]), int(end_point[1])), (0, 255, 255), 4)
-            
-            return []
+            # 回傳兩個獨立的框陣列
+            return target_boxes, robot_boxes
 
         # ==========================================
-        # 🎈 其他階段 (1~7)：目標物偵測
+        # 🎈 階段 1 ~ 8：單目標物偵測 (原版邏輯完整保留)
         # ==========================================
         else:
-            # 🌟 核心修改：客製化各階段的信心度門檻
-            if stage in [1, 2]:
-                # 狗模型特徵較不明顯，我們將門檻下殺到 0.30 把它逼出來！
-                current_conf = 0.7
-            elif stage in [6, 7]:
+            model_name = self.stage_model_map.get(stage)
+            if not model_name:
+                return [] # 包含已被拔除模型的第 8 階段，會直接安全地回傳空陣列
+
+            model = self._get_model(model_name)
+            if not model:
+                return []
+
+            # 核心修改：客製化各階段的信心度門檻
+            if stage in [1, 2, 6, 7]:
                 current_conf = 0.7
             else:
-                # 其他掛在牆上或明顯的物件維持嚴格標準
                 current_conf = 0.75
             
             results = model.predict(
@@ -144,9 +134,7 @@ class ModelManager:
                     box_area = (x2 - x1) * (y2 - y1)
                     area_ratio = box_area / frame_area
                     
-                    # 🌟 面積過濾防線：
-                    # 既然我們把第 1,2 階段的信心度降得這麼低，就必須確保「人體」被濾掉。
-                    # 設定 0.40 (佔畫面 40%) 為極限，超過這個大小的一律當作人類或背景誤判。
+                    # 面積過濾防線：確保人體被濾掉
                     if stage in [1, 2, 6, 7] and area_ratio > 0.40:
                         continue
                         
