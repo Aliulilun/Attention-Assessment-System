@@ -49,7 +49,7 @@ class GazeFSMManager:
                 self.last_valid_centroid = current_centroid
                 
             # 常規幾何空間量測
-            if pitch < 0:  # 向上看（在你的系統坐標系中，頭部向上為負值）
+            if pitch < 10:  # 向上看（在你的系統坐標系中，頭部向上為負值）
                 if yaw > 35: 
                     return "RIGHT_BACK_UPPER"
                 elif yaw < -35: 
@@ -64,13 +64,13 @@ class GazeFSMManager:
                 
                 # 依據盲區前一影格的運動向量外推意圖
                 # 臨界條件：Yaw 偏航超過 35° 且 Pitch 呈現上揚趨勢
-                if last_yaw > 35 and last_pitch < 0:
+                if last_yaw > 35 and last_pitch < 10:
                     self.current_state = "EXTREME_TURNING"
                     self.gaze_target = "RIGHT_BACK_UPPER"
                     self.hold_counter = 1
                     print(f"⚠️ 臨界狀態轉移：測不到人臉，但消失前姿態為 Yaw:{last_yaw:.1f}°, Pitch:{last_pitch:.1f}° -> 進入右後上方盲追蹤")
                 
-                elif last_yaw < -35 and last_pitch < 0:
+                elif last_yaw < -35 and last_pitch < 10:
                     self.current_state = "EXTREME_TURNING"
                     self.gaze_target = "LEFT_BACK_UPPER"
                     self.hold_counter = 1

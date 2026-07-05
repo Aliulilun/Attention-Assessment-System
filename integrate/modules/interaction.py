@@ -47,7 +47,7 @@ class InteractionEngine:
             self.model_human = YOLO('yolo11n-pose.pt')
 
         print(">>> [InteractionEngine] 載入 MediaPipe Hand Landmarker (Tasks API VIDEO MODE)...")
-        model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'model', 'hand_landmarker.task')
+        model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'model', 'gaze/hand_landmarker.task')
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"❌ 找不到 MediaPipe 模型檔案: {model_path}")
 
