@@ -9,9 +9,11 @@
 !*/
 
 # =========================
-# Fully ignore model_test (nothing inside should ever be uploaded)
+# Fully ignore model_test (large data: videos, models),
+# except the script itself
 # =========================
-model_test/
+model_test/*
+!model_test/model_test.py
 
 # =========================
 # Keep trained YOLO model weights only
