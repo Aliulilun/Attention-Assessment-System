@@ -30,7 +30,7 @@
     - 版本皆為根據資料夾後墜日期，數字越大則版本越新，無標示或非日期之編號，則為舊版測試用model
   - `code/` 底下所有檔案（程式碼、模組、必要的示意圖片）
   - `.gitignore`、`README.md`
-- `model_test/` 僅上傳model_test.py供測試參考，不會有任何檔案被上傳
+- `model_test/` 僅上傳model_test.py供測試參考，不會有其他任何檔案被上傳
 
 ## 說明
 
