@@ -1,6 +1,7 @@
 import os
 import json
 import subprocess
+import sys
 
 class SpeechTrigger:
     def __init__(self, video_path, output_dir, keywords):
@@ -8,6 +9,10 @@ class SpeechTrigger:
         self.output_dir = output_dir
         self.keywords = keywords
         self.cache_path = os.path.join(output_dir, "speech_cache.json")
+        self.noise_sample_path = os.path.join(
+            output_dir,
+            "noise_reference_2m23_2m33.wav",
+        )
         self.transcript_dict = {}
 
     def get_trigger_windows(self):
@@ -25,12 +30,21 @@ class SpeechTrigger:
         
         # 呼叫獨立的 Python 行程來執行語音辨識
         cmd = [
-            "python", engine_path,
+            sys.executable, engine_path,
             "--video", self.video_path,
             "--output-dir", self.output_dir,
             "--model", "large-v3",  
             "--keywords"
         ] + self.keywords
+
+        if os.path.exists(self.noise_sample_path):
+            cmd.extend([
+                "--noise-sample",
+                self.noise_sample_path,
+                "--noise-template-threshold",
+                "0.65",
+            ])
+            print(f">>> [SpeechTrigger] 使用怪聲範本：{self.noise_sample_path}")
 
         try:
             # 啟動獨立行程，並等待它執行完畢
