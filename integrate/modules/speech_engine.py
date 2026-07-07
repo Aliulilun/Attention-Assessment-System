@@ -22,6 +22,10 @@ DEFAULT_KEYWORDS = [
     "準備囉",
 ]
 
+DEFAULT_NOISE_SAMPLE_FILENAME = "noise_reference_2m23_2m33.wav"
+DEFAULT_NOISE_TEMPLATE_THRESHOLD = 0.58
+DEFAULT_AUTO_NOISE_TEMPLATE_THRESHOLD = 0.65
+
 TEXT_CANONICAL_MAP = str.maketrans(
     {
         "這": "这",
@@ -51,9 +55,28 @@ DIGIT_CANONICAL_MAP = str.maketrans(
 COUNTDOWN_NORMALIZED_KEYWORDS = {"321"}
 COUNTDOWN_FRAGMENT_KEYWORDS = {"1", "2", "3"}
 SHORT_KEYWORD_MIN_CONTEXT_LEN = 2
+RECOVERED_NIKAN_ALIASES = {
+    "腰前向",
+    "腰前像",
+    "有前向",
+    "有前像",
+    "右前向",
+    "右前像",
+    "宥前向",
+    "宥前像",
+}
+MUSIC_CONTEXT_KEYWORDS = {
+    "歌",
+    "音樂",
+    "音乐",
+    "畫畫",
+    "画画",
+    "畫好了",
+    "画好了",
+}
 
-# 【第 10 版：字級時間戳安全防護版】
-MATCHING_ALGORITHM_VERSION = 10
+# 【第 12 版：怪聲參考樣本相似度版】
+MATCHING_ALGORITHM_VERSION = 13
 
 
 @dataclass
@@ -70,6 +93,11 @@ class SpeechConfig:
     time_offset_sec: float = 0.0
     keywords: Tuple[str, ...] = tuple(DEFAULT_KEYWORDS)
     speech_context_gap_sec: float = 0.8
+    recovered_keyword_max_duration_sec: float = 1.6
+    recovered_keyword_max_avg_probability: float = 0.72
+    repeated_nikan_min_duration_sec: float = 1.15
+    repeated_nikan_interval_sec: float = 0.72
+    repeated_nikan_tail_margin_sec: float = 0.18
     
     # 強制 0 容錯 (確保不會誤判你好)
     keyword_max_edit_distance: int = 0
@@ -79,10 +107,19 @@ class SpeechConfig:
     noise_sample_rate: int = 16000
     noise_frame_sec: float = 0.10
     noise_hop_sec: float = 0.05
+    noise_response_window_sec: float = 10.0
+    noise_music_context_sec: float = 12.0
+    noise_sample_path: Optional[str] = None
+    noise_reference_start_sec: Optional[float] = None
+    noise_reference_duration_sec: float = 2.5
+    noise_template_padding_sec: float = 0.25
+    noise_template_similarity_min: float = 0.58
     
     # 怪聲偵測參數
     noise_min_duration_sec: float = 0.4       
+    noise_max_duration_sec: float = 4.0
     noise_merge_gap_sec: float = 0.5          
+    noise_onset_backtrack_sec: float = 1.5
     noise_low_band_hz: float = 1000.0          
     noise_high_band_hz: float = 5000.0        
     noise_flatness_max: float = 0.45           
@@ -139,6 +176,40 @@ def parse_args() -> argparse.Namespace:
         help="停用怪聲觸發偵測",
     )
     parser.add_argument(
+        "--noise-window",
+        type=float,
+        default=10.0,
+        help="怪聲觸發後的判定時間窗秒數。預設為 10.0",
+    )
+    parser.add_argument(
+        "--noise-sample",
+        default=None,
+        help="警報聲參考樣本路徑。建議使用 1~3 秒 wav，提供後會用相似度挑選怪聲",
+    )
+    parser.add_argument(
+        "--noise-reference-start",
+        default=None,
+        help="從目前影片取警報聲參考起點，可用秒數或 mm:ss，例如 2:23",
+    )
+    parser.add_argument(
+        "--noise-reference-duration",
+        type=float,
+        default=2.5,
+        help="從目前影片取警報聲參考的秒數。預設為 2.5",
+    )
+    parser.add_argument(
+        "--noise-template-threshold",
+        type=float,
+        default=None,
+        help="怪聲參考樣本最低相似度。越高越保守；自動範本預設為 0.65，其他情況預設為 0.58",
+    )
+    parser.add_argument(
+        "--noise-max-duration",
+        type=float,
+        default=4.0,
+        help="未使用樣本時，單一怪聲候選最長秒數。預設為 4.0",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="忽略快取，強制重新分析",
@@ -146,11 +217,36 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_noise_sample_path(
+    output_dir: str,
+    sample_arg: Optional[str],
+) -> Tuple[Optional[str], bool]:
+    if sample_arg:
+        return os.path.abspath(sample_arg), False
+
+    default_sample_path = os.path.join(output_dir, DEFAULT_NOISE_SAMPLE_FILENAME)
+    if os.path.exists(default_sample_path):
+        return os.path.abspath(default_sample_path), True
+
+    return None, False
+
+
 def build_config(args: argparse.Namespace) -> SpeechConfig:
     base_dir = os.path.dirname(os.path.abspath(__file__))
     video_path = args.video or os.path.join(base_dir, "video", "8.mp4")
     output_dir = args.output_dir or os.path.join(base_dir, "output")
     output_dir = os.path.abspath(output_dir)
+    noise_sample_path, uses_default_noise_sample = resolve_noise_sample_path(
+        output_dir,
+        args.noise_sample,
+    )
+    noise_template_threshold = (
+        args.noise_template_threshold
+        if args.noise_template_threshold is not None
+        else DEFAULT_AUTO_NOISE_TEMPLATE_THRESHOLD
+        if uses_default_noise_sample
+        else DEFAULT_NOISE_TEMPLATE_THRESHOLD
+    )
 
     return SpeechConfig(
         base_dir=base_dir,
@@ -165,6 +261,12 @@ def build_config(args: argparse.Namespace) -> SpeechConfig:
         keywords=tuple(args.keywords or DEFAULT_KEYWORDS),
         skip_whisper=args.skip_whisper,
         noise_trigger_enabled=not args.disable_noise_trigger,
+        noise_response_window_sec=args.noise_window,
+        noise_sample_path=noise_sample_path,
+        noise_reference_start_sec=parse_time_value(args.noise_reference_start),
+        noise_reference_duration_sec=args.noise_reference_duration,
+        noise_template_similarity_min=noise_template_threshold,
+        noise_max_duration_sec=args.noise_max_duration,
         force_rebuild=True, 
     )
 
@@ -198,6 +300,28 @@ def format_mmss(seconds: float) -> str:
     minutes = whole_seconds // 60
     remain_seconds = whole_seconds % 60
     return f"{minutes:02d}:{remain_seconds:02d}"
+
+
+def parse_time_value(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if ":" not in text:
+        return float(text)
+
+    parts = [float(part) for part in text.split(":")]
+    if len(parts) == 2:
+        minutes, seconds = parts
+        return minutes * 60.0 + seconds
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+        return hours * 3600.0 + minutes * 60.0 + seconds
+
+    raise ValueError(f"不支援的時間格式：{value}")
 
 
 def apply_time_offset(seconds: float, config: SpeechConfig) -> float:
@@ -294,6 +418,278 @@ def find_all_occurrences(text: str, pattern: str) -> List[int]:
         start_index = match_index + max(1, len(pattern))
 
 
+def get_word_text(word: Dict[str, Any]) -> str:
+    raw_word = word.get("word", word.get("text", ""))
+    return str(raw_word).strip()
+
+
+def build_word_timeline(
+    record: Dict[str, Any],
+) -> Tuple[str, List[Dict[str, float]]]:
+    word_timeline: List[Dict[str, float]] = []
+    normalized_words: List[str] = []
+
+    for word in record.get("words", []) or []:
+        word_text = get_word_text(word)
+        normalized_word = normalize_text(word_text)
+        if not normalized_word:
+            continue
+        if "start" not in word or "end" not in word:
+            continue
+
+        start_index = sum(len(item) for item in normalized_words)
+        end_index = start_index + len(normalized_word)
+        normalized_words.append(normalized_word)
+        word_timeline.append(
+            {
+                "start_index": float(start_index),
+                "end_index": float(end_index),
+                "raw_start": float(word["start"]),
+                "raw_end": float(word["end"]),
+            }
+        )
+
+    return "".join(normalized_words), word_timeline
+
+
+def count_keyword_occurrences(
+    normalized_text: str,
+    keywords: Sequence[str],
+) -> int:
+    total_count = 0
+    for keyword in keywords:
+        normalized_keyword = normalize_text(keyword)
+        if not normalized_keyword:
+            continue
+        if is_countdown_fragment_keyword(normalized_keyword):
+            continue
+        for start_index in find_all_occurrences(normalized_text, normalized_keyword):
+            end_index = start_index + len(normalized_keyword)
+            if is_valid_keyword_occurrence(
+                normalized_text,
+                normalized_keyword,
+                start_index,
+                end_index,
+            ):
+                total_count += 1
+    return total_count
+
+
+def choose_keyword_detection_text(
+    segment_text: str,
+    word_text: str,
+    keywords: Sequence[str],
+) -> Tuple[str, str]:
+    if not word_text:
+        return segment_text, "segment"
+
+    segment_count = count_keyword_occurrences(segment_text, keywords)
+    word_count = count_keyword_occurrences(word_text, keywords)
+    if word_count > segment_count:
+        return word_text, "word"
+    return segment_text, "segment"
+
+
+def estimate_keyword_raw_start(
+    record: Dict[str, Any],
+    detection_text: str,
+    detection_source: str,
+    start_index: int,
+) -> float:
+    segment_start = float(record.get("raw_start", 0.0))
+    segment_end = float(record.get("raw_end", segment_start))
+    segment_duration = max(0.0, segment_end - segment_start)
+    detection_length = max(1, len(detection_text))
+    fallback_start = segment_start + (start_index / detection_length) * segment_duration
+
+    word_text, word_timeline = build_word_timeline(record)
+    if not word_timeline:
+        return fallback_start
+
+    aligned_start_index = start_index
+    if detection_source != "word" and word_text != detection_text:
+        aligned_start_index = int(
+            round((start_index / detection_length) * max(1, len(word_text)))
+        )
+
+    for word in word_timeline:
+        word_start_index = int(word["start_index"])
+        word_end_index = int(word["end_index"])
+        if word_start_index <= aligned_start_index < word_end_index:
+            word_duration = max(0.0, word["raw_end"] - word["raw_start"])
+            word_length = max(1, word_end_index - word_start_index)
+            inside_word_ratio = (aligned_start_index - word_start_index) / word_length
+            return word["raw_start"] + inside_word_ratio * word_duration
+        if aligned_start_index < word_start_index:
+            return word["raw_start"]
+
+    return float(word_timeline[-1]["raw_start"])
+
+
+def has_existing_event_near(
+    events: Sequence[Dict[str, Any]],
+    keyword: str,
+    raw_start: float,
+    tolerance_sec: float = 0.35,
+) -> bool:
+    for event in events:
+        if keyword not in event.get("keywords", []):
+            continue
+        event_raw_start = float(event.get("raw_start", event.get("start", 0.0)))
+        if abs(event_raw_start - raw_start) <= tolerance_sec:
+            return True
+    return False
+
+
+def word_probability_values(record: Dict[str, Any]) -> List[float]:
+    values: List[float] = []
+    for word in record.get("words", []) or []:
+        probability = word.get("probability")
+        if probability is None:
+            continue
+        values.append(float(probability))
+    return values
+
+
+def average_word_probability(record: Dict[str, Any]) -> float:
+    values = word_probability_values(record)
+    if not values:
+        return 1.0
+    return sum(values) / len(values)
+
+
+def is_recoverable_nikan_text(normalized_text: str) -> bool:
+    if not normalized_text:
+        return False
+    if "你好" in normalized_text:
+        return False
+    if normalized_text in RECOVERED_NIKAN_ALIASES:
+        return True
+
+    # Whisper 對「宥辰你看」的第 4 次短句，常會把尾音錯成「前向／前像」。
+    if len(normalized_text) <= 4 and (
+        normalized_text.endswith("前向") or normalized_text.endswith("前像")
+    ):
+        return True
+
+    return False
+
+
+def estimate_recovered_nikan_start(record: Dict[str, Any]) -> float:
+    words = record.get("words", []) or []
+    for word in words:
+        word_text = normalize_text(get_word_text(word))
+        if (word_text == "前" or word_text.startswith("前")) and "start" in word:
+            return float(word["start"])
+
+    segment_start = float(record.get("raw_start", 0.0))
+    segment_end = float(record.get("raw_end", segment_start))
+    return segment_start + max(0.0, segment_end - segment_start) * 0.55
+
+
+def build_recovered_nikan_event(
+    record: Dict[str, Any],
+    config: SpeechConfig,
+) -> List[Dict[str, Any]]:
+    if "你看" not in config.keywords:
+        return []
+
+    normalized_text = normalize_text(str(record.get("text", "")))
+    if not is_recoverable_nikan_text(normalized_text):
+        return []
+
+    segment_start = float(record.get("raw_start", 0.0))
+    segment_end = float(record.get("raw_end", segment_start))
+    duration = max(0.0, segment_end - segment_start)
+    if duration > config.recovered_keyword_max_duration_sec:
+        return []
+
+    avg_probability = average_word_probability(record)
+    min_probability = min(word_probability_values(record) or [1.0])
+    if (
+        avg_probability > config.recovered_keyword_max_avg_probability
+        and min_probability > 0.35
+    ):
+        return []
+
+    estimated_raw_start = estimate_recovered_nikan_start(record)
+    event_start = apply_time_offset(estimated_raw_start, config)
+    event_end = apply_time_offset(
+        estimated_raw_start + config.response_window_sec,
+        config,
+    )
+
+    return [
+        {
+            "id": f"speech_{record.get('id', '000')}_recover_nikan",
+            "event_type": "speech",
+            "keywords": ["你看"],
+            "match_source": "recovered_low_confidence",
+            "recognized_text": str(record.get("text", "")),
+            "avg_probability": round(avg_probability, 3),
+            "raw_start": round(estimated_raw_start, 3),
+            "start": event_start,
+            "end": event_start,
+            "trigger_window": (event_start, event_end),
+        }
+    ]
+
+
+def build_repeated_nikan_events(
+    record: Dict[str, Any],
+    config: SpeechConfig,
+    existing_events: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if "你看" not in config.keywords:
+        return []
+
+    normalized_text = normalize_text(str(record.get("text", "")))
+    if normalized_text != "你看":
+        return []
+
+    segment_start = float(record.get("raw_start", 0.0))
+    segment_end = float(record.get("raw_end", segment_start))
+    duration = max(0.0, segment_end - segment_start)
+    if duration < config.repeated_nikan_min_duration_sec:
+        return []
+
+    estimated_count = int(round(duration / config.repeated_nikan_interval_sec))
+    estimated_count = max(2, min(estimated_count, 4))
+
+    candidate_raw_starts = [
+        min(
+            segment_end - config.repeated_nikan_tail_margin_sec,
+            segment_start + config.repeated_nikan_interval_sec * index,
+        )
+        for index in range(1, estimated_count)
+    ]
+
+    recovered_events: List[Dict[str, Any]] = []
+    for index, raw_start in enumerate(candidate_raw_starts, start=1):
+        if raw_start <= segment_start:
+            continue
+        if has_existing_event_near(existing_events, "你看", raw_start):
+            continue
+
+        event_start = apply_time_offset(raw_start, config)
+        event_end = apply_time_offset(raw_start + config.response_window_sec, config)
+        recovered_events.append(
+            {
+                "id": f"speech_{record.get('id', '000')}_repeat_nikan_{index:02d}",
+                "event_type": "speech",
+                "keywords": ["你看"],
+                "match_source": "repeated_nikan_compensation",
+                "recognized_text": str(record.get("text", "")),
+                "raw_start": round(raw_start, 3),
+                "start": event_start,
+                "end": event_start,
+                "trigger_window": (event_start, event_end),
+            }
+        )
+
+    return recovered_events
+
+
 def build_direct_keyword_events(
     record: Dict[str, Any],
     config: SpeechConfig,
@@ -303,11 +699,18 @@ def build_direct_keyword_events(
     if not raw_text:
         return []
 
-    normalized_text = normalize_text(raw_text)
+    segment_normalized_text = normalize_text(raw_text)
+    word_normalized_text, _ = build_word_timeline(record)
+    normalized_text, detection_source = choose_keyword_detection_text(
+        segment_normalized_text,
+        word_normalized_text,
+        config.keywords,
+    )
+
     if not normalized_text:
         return []
 
-    if "你好" in normalized_text and not any(k in normalized_text for k in ["你看", "準備", "開始", "看這裡"]):
+    if "你好" in segment_normalized_text and not any(k in normalized_text for k in ["你看", "准备", "開始", "看这里"]):
         return []
 
     candidates: List[Dict[str, Any]] = []
@@ -337,7 +740,7 @@ def build_direct_keyword_events(
             )
 
     if not candidates:
-        return []
+        return build_recovered_nikan_event(record, config)
 
     candidates.sort(
         key=lambda item: (
@@ -372,32 +775,15 @@ def build_direct_keyword_events(
         )
         occupied_positions.update(span)
 
-    # 【安全防護】：確保 start 和 end 是數字
-    segment_start = float(record.get("raw_start", 0.0))
-    segment_end = float(record.get("raw_end", segment_start))
-    segment_duration = max(0.0, segment_end - segment_start)
-    normalized_length = max(1, len(normalized_text))
-
     trigger_events: List[Dict[str, Any]] = []
     for index, match in enumerate(sorted(accepted, key=lambda item: item["start_index"])):
-        
-        estimated_raw_start = segment_start + (match["start_index"] / normalized_length) * segment_duration
-        
-        # 【核心容錯防護】：安全提取 words 陣列，避免 KeyError: 'text'
-        words_list = record.get("words", [])
-        if words_list:
-            for w in words_list:
-                # 確保 w 有 text 且不是 None
-                w_text_raw = w.get("text", "")
-                if not w_text_raw:
-                    continue
-                
-                w_text_norm = normalize_text(w_text_raw)
-                if w_text_norm and (w_text_norm in match["normalized_keyword"] or match["normalized_keyword"] in w_text_norm):
-                    # 確保 w 有 start 屬性
-                    if "start" in w:
-                        estimated_raw_start = float(w["start"])
-                        break
+
+        estimated_raw_start = estimate_keyword_raw_start(
+            record,
+            normalized_text,
+            detection_source,
+            int(match["start_index"]),
+        )
         
         event_start = apply_time_offset(estimated_raw_start, config)
         event_end = apply_time_offset(
@@ -409,13 +795,18 @@ def build_direct_keyword_events(
                 "id": f"speech_{record.get('id', '000')}_{index + 1:02d}",
                 "event_type": "speech",
                 "keywords": sorted(set(match["keywords"])),
-                "match_source": "direct",
+                "match_source": "direct_word" if detection_source == "word" else "direct",
+                "raw_start": round(estimated_raw_start, 3),
                 "start": event_start,
                 "end": event_start,
                 "trigger_window": (event_start, event_end),
             }
         )
 
+    trigger_events.extend(
+        build_repeated_nikan_events(record, config, trigger_events)
+    )
+    trigger_events.sort(key=lambda event: float(event.get("start", 0.0)))
     return trigger_events
 
 
@@ -442,10 +833,10 @@ def build_boundary_keyword_events(
     if not found_keywords:
         return []
 
-    r_start = float(record.get("raw_start", 0.0))
-    event_start = apply_time_offset(r_start, config)
+    boundary_raw_start = r_end if nr_start <= r_end else (r_end + nr_start) / 2.0
+    event_start = apply_time_offset(boundary_raw_start, config)
     event_end = apply_time_offset(
-        r_start + config.response_window_sec,
+        boundary_raw_start + config.response_window_sec,
         config,
     )
     return [
@@ -454,6 +845,7 @@ def build_boundary_keyword_events(
             "event_type": "speech",
             "keywords": sorted(set(found_keywords)),
             "match_source": "context",
+            "raw_start": round(boundary_raw_start, 3),
             "start": event_start,
             "end": event_start,
             "trigger_window": (event_start, event_end),
@@ -478,6 +870,138 @@ def merge_overlapping_windows(
             merged.append((current_start, current_end))
 
     return merged
+
+
+def is_music_context_record(record: Dict[str, Any]) -> bool:
+    normalized_text = normalize_text(str(record.get("text", "")))
+    if not normalized_text:
+        return False
+
+    if any(keyword in normalized_text for keyword in MUSIC_CONTEXT_KEYWORDS):
+        return True
+
+    if re.search(r"([\u4e00-\u9fff])\1{2,}", normalized_text):
+        return True
+
+    return False
+
+
+def is_noise_near_music_context(
+    noise_event: Dict[str, Any],
+    segment_records: Sequence[Dict[str, Any]],
+    config: SpeechConfig,
+) -> bool:
+    event_start = float(noise_event.get("raw_start", noise_event.get("start", 0.0)))
+    event_end = float(noise_event.get("raw_end", noise_event.get("end", event_start)))
+
+    for record in segment_records:
+        if not is_music_context_record(record):
+            continue
+
+        record_start = float(record.get("raw_start", record.get("start", 0.0)))
+        record_end = float(record.get("raw_end", record.get("end", record_start)))
+        gap = max(record_start - event_end, event_start - record_end, 0.0)
+        if gap <= config.noise_music_context_sec:
+            noise_event["rejected_reason"] = (
+                f"near_music_context:{record.get('text', '')}"
+            )
+            return True
+
+    return False
+
+
+def select_alarm_noise_events(
+    noise_events: Sequence[Dict[str, Any]],
+    segment_records: Sequence[Dict[str, Any]],
+    config: SpeechConfig,
+) -> List[Dict[str, Any]]:
+    if not noise_events:
+        return []
+
+    eligible_events = [
+        event
+        for event in noise_events
+        if not is_noise_near_music_context(event, segment_records, config)
+    ]
+
+    template_events = [
+        event
+        for event in eligible_events
+        if float(event.get("template_similarity", -1.0))
+        >= config.noise_template_similarity_min
+    ]
+    if template_events:
+        best_event = max(
+            template_events,
+            key=lambda event: (
+                float(event.get("template_similarity", -1.0)),
+                float(event.get("score", 0.0)),
+                float(event.get("peak_score", 0.0)),
+            ),
+        )
+        best_event["selection_reason"] = "best_reference_sample_similarity"
+        return [best_event]
+
+    fallback_template_events = [
+        event
+        for event in noise_events
+        if float(event.get("template_similarity", -1.0))
+        >= config.noise_template_similarity_min
+    ]
+    if fallback_template_events:
+        best_event = max(
+            fallback_template_events,
+            key=lambda event: (
+                float(event.get("template_similarity", -1.0)),
+                float(event.get("score", 0.0)),
+                float(event.get("peak_score", 0.0)),
+            ),
+        )
+        best_event["selection_reason"] = (
+            "fallback_reference_sample_similarity_all_rejected"
+        )
+        return [best_event]
+
+    rejected_template_events = [
+        event for event in noise_events if "template_similarity" in event
+    ]
+    if rejected_template_events and (
+        config.noise_sample_path is not None
+        or config.noise_reference_start_sec is not None
+    ):
+        best_event = max(
+            rejected_template_events,
+            key=lambda event: float(event.get("template_similarity", -1.0)),
+        )
+        best_event["rejected_reason"] = (
+            f"template_similarity_below_threshold:"
+            f"{float(best_event.get('template_similarity', -1.0)):.4f}"
+            f"<{config.noise_template_similarity_min:.2f}"
+        )
+        return []
+
+    if eligible_events:
+        best_event = max(
+            eligible_events,
+            key=lambda event: (
+                float(event.get("score", 0.0)),
+                float(event.get("peak_score", 0.0)),
+                -float(event.get("raw_start", event.get("start", 0.0))),
+            ),
+        )
+        best_event["selection_reason"] = "best_non_music_alarm_candidate"
+        return [best_event]
+
+    best_event = max(
+        noise_events,
+        key=lambda event: (
+            float(event.get("score", 0.0)),
+            float(event.get("peak_score", 0.0)),
+            -float(event.get("raw_start", event.get("start", 0.0))),
+        ),
+    )
+    best_event["selection_reason"] = "fallback_best_candidate_all_rejected"
+    return [best_event]
 
 
 def is_cache_valid(cache_data: Dict[str, Any], config: SpeechConfig) -> bool:
@@ -653,6 +1177,316 @@ def load_wav_as_float32(wav_path: str) -> Tuple[np.ndarray, int]:
     return audio, sample_rate
 
 
+def convert_audio_sample_to_wav(
+    sample_path: str,
+    target_sample_rate: int,
+    output_dir: str,
+) -> str:
+    output_path = os.path.join(output_dir, "noise_reference_sample.wav")
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        sample_path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(target_sample_rate),
+        "-acodec",
+        "pcm_s16le",
+        output_path,
+    ]
+    completed = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"警報樣本轉檔失敗：{completed.stderr.strip()}")
+    return output_path
+
+
+def l2_normalize(vector: np.ndarray) -> Optional[np.ndarray]:
+    norm = float(np.linalg.norm(vector))
+    if norm <= 1e-8:
+        return None
+    return vector / norm
+
+
+def build_spectral_profile(
+    audio: np.ndarray,
+    sample_rate: int,
+    start_time: float,
+    end_time: float,
+    config: SpeechConfig,
+) -> Optional[np.ndarray]:
+    start_sample = max(0, int(start_time * sample_rate))
+    end_sample = min(len(audio), int(end_time * sample_rate))
+    if end_sample <= start_sample:
+        return None
+
+    clip = audio[start_sample:end_sample].astype(np.float32)
+    if clip.size < int(sample_rate * 0.18):
+        return None
+
+    clip = clip - float(np.mean(clip))
+    rms = float(np.sqrt(np.mean(clip * clip)))
+    if rms <= 1e-5:
+        return None
+    clip = clip / rms
+
+    frame_size = max(int(sample_rate * config.noise_frame_sec), 512)
+    hop_size = max(int(sample_rate * config.noise_hop_sec), 128)
+    if clip.size < frame_size:
+        clip = np.pad(clip, (0, frame_size - clip.size))
+
+    freqs = np.fft.rfftfreq(frame_size, d=1.0 / sample_rate)
+    profile_mask = (freqs >= 500.0) & (freqs <= 6000.0)
+    profile_indices = np.where(profile_mask)[0]
+    if profile_indices.size < 16:
+        return None
+
+    bin_groups = np.array_split(profile_indices, 48)
+    window_fn = np.hanning(frame_size).astype(np.float32)
+    frame_profiles: List[np.ndarray] = []
+
+    for start in range(0, clip.size - frame_size + 1, hop_size):
+        frame = clip[start : start + frame_size] * window_fn
+        magnitude = np.abs(np.fft.rfft(frame))
+        band_values = [
+            float(np.mean(np.log1p(magnitude[group])))
+            for group in bin_groups
+            if group.size > 0
+        ]
+        if band_values:
+            frame_profiles.append(np.asarray(band_values, dtype=np.float32))
+
+    if not frame_profiles:
+        return None
+
+    profile = np.mean(np.vstack(frame_profiles), axis=0)
+    profile = profile - float(np.mean(profile))
+    return l2_normalize(profile.astype(np.float32))
+
+
+def build_reference_noise_profile(
+    audio: np.ndarray,
+    sample_rate: int,
+    config: SpeechConfig,
+) -> Tuple[Optional[np.ndarray], Optional[str], Optional[float]]:
+    if config.noise_reference_start_sec is not None:
+        reference_start = config.noise_reference_start_sec
+        reference_end = reference_start + config.noise_reference_duration_sec
+        profile = build_spectral_profile(
+            audio,
+            sample_rate,
+            reference_start,
+            reference_end,
+            config,
+        )
+        return profile, f"video@{reference_start:.3f}s", config.noise_reference_duration_sec
+
+    if not config.noise_sample_path:
+        return None, None, None
+
+    sample_wav_path = convert_audio_sample_to_wav(
+        config.noise_sample_path,
+        sample_rate,
+        config.output_dir,
+    )
+    sample_audio, sample_rate = load_wav_as_float32(sample_wav_path)
+    profile = build_spectral_profile(
+        sample_audio,
+        sample_rate,
+        0.0,
+        len(sample_audio) / sample_rate,
+        config,
+    )
+    return profile, os.path.abspath(config.noise_sample_path), len(sample_audio) / sample_rate
+
+
+def annotate_template_similarity(
+    noise_events: Sequence[Dict[str, Any]],
+    audio: np.ndarray,
+    sample_rate: int,
+    config: SpeechConfig,
+) -> None:
+    reference_profile, reference_label, _ = build_reference_noise_profile(
+        audio,
+        sample_rate,
+        config,
+    )
+    if reference_profile is None:
+        return
+
+    for event in noise_events:
+        event_start = float(event["raw_start"]) - config.noise_template_padding_sec
+        event_end = float(event["raw_end"]) + config.noise_template_padding_sec
+        event_profile = build_spectral_profile(
+            audio,
+            sample_rate,
+            event_start,
+            event_end,
+            config,
+        )
+        if event_profile is None:
+            continue
+        similarity = float(np.dot(reference_profile, event_profile))
+        event["template_similarity"] = round(similarity, 4)
+        event["template_source"] = reference_label
+
+
+def summarize_noise_interval(
+    audio: np.ndarray,
+    sample_rate: int,
+    start_time: float,
+    end_time: float,
+    config: SpeechConfig,
+) -> Dict[str, float]:
+    start_sample = max(0, int(start_time * sample_rate))
+    end_sample = min(len(audio), int(end_time * sample_rate))
+    clip = audio[start_sample:end_sample].astype(np.float32)
+    if clip.size < 256:
+        return {
+            "dominant_freq_mean": 0.0,
+            "dominant_freq_std": 0.0,
+            "spectral_centroid": 0.0,
+            "spectral_flatness": 1.0,
+        }
+
+    frame_size = max(int(sample_rate * config.noise_frame_sec), 512)
+    hop_size = max(int(sample_rate * config.noise_hop_sec), 128)
+    if clip.size < frame_size:
+        clip = np.pad(clip, (0, frame_size - clip.size))
+
+    freqs = np.fft.rfftfreq(frame_size, d=1.0 / sample_rate)
+    target_mask = (freqs >= config.noise_low_band_hz) & (
+        freqs <= config.noise_high_band_hz
+    )
+    window_fn = np.hanning(frame_size).astype(np.float32)
+    dominant_values: List[float] = []
+    centroid_values: List[float] = []
+    flatness_values: List[float] = []
+
+    for start in range(0, clip.size - frame_size + 1, hop_size):
+        frame = clip[start : start + frame_size] * window_fn
+        magnitude = np.abs(np.fft.rfft(frame))
+        target_bins = magnitude[target_mask]
+        target_mean = float(np.mean(target_bins) + 1e-8) if target_bins.size else 1e-8
+        flatness = (
+            float(np.exp(np.mean(np.log(target_bins + 1e-8))) / target_mean)
+            if target_bins.size
+            else 1.0
+        )
+        dominant_values.append(float(freqs[int(np.argmax(magnitude))]))
+        centroid_values.append(
+            float(np.sum(freqs * magnitude) / (np.sum(magnitude) + 1e-8))
+        )
+        flatness_values.append(flatness)
+
+    return {
+        "dominant_freq_mean": round(float(np.mean(dominant_values)), 1),
+        "dominant_freq_std": round(float(np.std(dominant_values)), 1),
+        "spectral_centroid": round(float(np.mean(centroid_values)), 1),
+        "spectral_flatness": round(float(np.mean(flatness_values)), 3),
+    }
+
+
+def detect_template_noise_event(
+    audio: np.ndarray,
+    sample_rate: int,
+    config: SpeechConfig,
+) -> Optional[Dict[str, Any]]:
+    reference_profile, reference_label, reference_duration = build_reference_noise_profile(
+        audio,
+        sample_rate,
+        config,
+    )
+    if reference_profile is None or reference_duration is None:
+        return None
+
+    window_duration = min(max(reference_duration, 0.8), 10.0)
+    hop_sec = 0.25
+    max_start = max(0.0, len(audio) / sample_rate - window_duration)
+    best_start: Optional[float] = None
+    best_similarity = -1.0
+
+    current_start = 0.0
+    while current_start <= max_start:
+        profile = build_spectral_profile(
+            audio,
+            sample_rate,
+            current_start,
+            current_start + window_duration,
+            config,
+        )
+        if profile is not None:
+            similarity = float(np.dot(reference_profile, profile))
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_start = current_start
+        current_start += hop_sec
+
+    if best_start is None:
+        return None
+
+    raw_start_time = refine_noise_onset_time(
+        best_start,
+        [
+            {
+                "start": best_start,
+                "rms": 1.0,
+                "band_ratio": 1.0,
+                "high_low_ratio": 1.0,
+                "spectral_flatness": 0.0,
+                "spectral_centroid": config.noise_low_band_hz,
+            }
+        ],
+        0.0,
+        0.0,
+        config.noise_flatness_max,
+        config,
+    )
+    raw_end_time = best_start + window_duration
+    start_time = apply_time_offset(raw_start_time, config)
+    end_time = apply_time_offset(raw_end_time, config)
+    summary = summarize_noise_interval(
+        audio,
+        sample_rate,
+        raw_start_time,
+        raw_end_time,
+        config,
+    )
+
+    return {
+        "id": "noise_template_001",
+        "raw_start": round(raw_start_time, 3),
+        "raw_end": round(raw_end_time, 3),
+        "start": start_time,
+        "end": end_time,
+        "event_type": "noise",
+        "label": "alarm_like_noise",
+        "score": round(best_similarity * 100.0, 3),
+        "peak_score": round(best_similarity * 100.0, 3),
+        "template_similarity": round(best_similarity, 4),
+        "template_source": reference_label,
+        "dominant_freq_mean": summary["dominant_freq_mean"],
+        "dominant_freq_std": summary["dominant_freq_std"],
+        "spectral_centroid": summary["spectral_centroid"],
+        "spectral_flatness": summary["spectral_flatness"],
+        "trigger_window": (
+            start_time,
+            apply_time_offset(
+                raw_start_time + config.noise_response_window_sec,
+                config,
+            ),
+        ),
+    }
+
+
 def percentile_value(values: Sequence[float], q: float) -> float:
     if not values:
         return 0.0
@@ -677,6 +1511,8 @@ def group_candidate_intervals(
         end_time = float(group[-1]["end"])
         duration = end_time - start_time
         if duration < config.noise_min_duration_sec:
+            return
+        if duration > config.noise_max_duration_sec:
             return
 
         dominant_frequencies = np.asarray(
@@ -734,6 +1570,36 @@ def group_candidate_intervals(
     finalize_group(current_group)
 
     return grouped
+
+
+def refine_noise_onset_time(
+    detected_start: float,
+    frame_metrics: Sequence[Dict[str, float]],
+    rms_threshold: float,
+    band_ratio_threshold: float,
+    flatness_threshold: float,
+    config: SpeechConfig,
+) -> float:
+    search_start = max(0.0, detected_start - config.noise_onset_backtrack_sec)
+    relaxed_rms_threshold = max(0.008, rms_threshold * 0.65)
+    relaxed_band_threshold = max(0.18, band_ratio_threshold * 0.60)
+    relaxed_flatness_threshold = min(config.noise_flatness_max + 0.15, flatness_threshold + 0.15)
+
+    onset_candidates = [
+        metric
+        for metric in frame_metrics
+        if search_start <= metric["start"] <= detected_start
+        and metric["rms"] >= relaxed_rms_threshold
+        and metric["band_ratio"] >= relaxed_band_threshold
+        and metric["high_low_ratio"] >= 0.45
+        and metric["spectral_flatness"] <= relaxed_flatness_threshold
+        and config.noise_low_band_hz <= metric["spectral_centroid"] <= config.noise_high_band_hz + 800.0
+    ]
+
+    if not onset_candidates:
+        return detected_start
+
+    return float(onset_candidates[0]["start"])
 
 
 def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
@@ -850,13 +1716,23 @@ def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
 
     noise_events: List[Dict[str, Any]] = []
     for index, event in enumerate(grouped, start=1):
-        raw_start_time = float(event["start"])
+        raw_start_time = refine_noise_onset_time(
+            float(event["start"]),
+            frame_metrics,
+            rms_threshold,
+            band_ratio_threshold,
+            flatness_threshold,
+            config,
+        )
         raw_end_time = float(event["end"])
         start_time = apply_time_offset(raw_start_time, config)
         end_time = apply_time_offset(raw_end_time, config)
         
         trigger_start = start_time
-        trigger_end = end_time
+        trigger_end = apply_time_offset(
+            raw_start_time + config.noise_response_window_sec,
+            config,
+        )
         
         noise_events.append(
             {
@@ -880,6 +1756,11 @@ def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
             }
         )
 
+    template_event = detect_template_noise_event(audio, sample_rate, config)
+    if template_event is not None:
+        noise_events.append(template_event)
+
+    annotate_template_similarity(noise_events, audio, sample_rate, config)
     return noise_events
 
 
@@ -898,14 +1779,28 @@ def save_cache(
             "time_offset_sec": config.time_offset_sec,
             "keywords": list(config.keywords),
             "speech_context_gap_sec": config.speech_context_gap_sec,
+            "recovered_keyword_max_duration_sec": config.recovered_keyword_max_duration_sec,
+            "recovered_keyword_max_avg_probability": config.recovered_keyword_max_avg_probability,
+            "repeated_nikan_min_duration_sec": config.repeated_nikan_min_duration_sec,
+            "repeated_nikan_interval_sec": config.repeated_nikan_interval_sec,
+            "repeated_nikan_tail_margin_sec": config.repeated_nikan_tail_margin_sec,
             "keyword_max_edit_distance": config.keyword_max_edit_distance,
             "skip_whisper": config.skip_whisper,
             "noise_trigger_enabled": config.noise_trigger_enabled,
             "noise_sample_rate": config.noise_sample_rate,
             "noise_frame_sec": config.noise_frame_sec,
             "noise_hop_sec": config.noise_hop_sec,
+            "noise_response_window_sec": config.noise_response_window_sec,
+            "noise_music_context_sec": config.noise_music_context_sec,
+            "noise_sample_path": config.noise_sample_path,
+            "noise_reference_start_sec": config.noise_reference_start_sec,
+            "noise_reference_duration_sec": config.noise_reference_duration_sec,
+            "noise_template_padding_sec": config.noise_template_padding_sec,
+            "noise_template_similarity_min": config.noise_template_similarity_min,
             "noise_min_duration_sec": config.noise_min_duration_sec,
+            "noise_max_duration_sec": config.noise_max_duration_sec,
             "noise_merge_gap_sec": config.noise_merge_gap_sec,
+            "noise_onset_backtrack_sec": config.noise_onset_backtrack_sec,
             "noise_low_band_hz": config.noise_low_band_hz,
             "noise_high_band_hz": config.noise_high_band_hz,
             "noise_flatness_max": config.noise_flatness_max,
@@ -933,7 +1828,19 @@ def save_report(
         file.write(f"影片：{config.video_path}\n")
         file.write(f"模型：{config.model_name}\n")
         file.write(f"反應時間窗：{config.response_window_sec:.1f} 秒\n")
+        file.write(f"怪聲判定時間窗：{config.noise_response_window_sec:.1f} 秒\n")
+        file.write(
+            f"怪聲樣本相似度門檻：{config.noise_template_similarity_min:.2f}\n"
+        )
+        file.write(f"怪聲候選最長長度：{config.noise_max_duration_sec:.1f} 秒\n")
         file.write(f"時間校正：{config.time_offset_sec:+.3f} 秒\n")
+        if config.noise_reference_start_sec is not None:
+            file.write(
+                f"怪聲參考來源：目前影片 {config.noise_reference_start_sec:.3f}s "
+                f"起 {config.noise_reference_duration_sec:.1f} 秒\n"
+            )
+        elif config.noise_sample_path:
+            file.write(f"怪聲參考來源：{config.noise_sample_path}\n")
         file.write(f"語音關鍵字：{'、'.join(config.keywords)}\n")
         file.write(f"是否跳過 Whisper：{'是' if config.skip_whisper else '否'}\n")
         file.write(
@@ -956,6 +1863,10 @@ def save_report(
                         match_label = (
                             "跨片段觸發"
                             if event.get("match_source") == "context"
+                            else "低信心修復觸發"
+                            if event.get("match_source") == "recovered_low_confidence"
+                            else "連續你看補償觸發"
+                            if event.get("match_source") == "repeated_nikan_compensation"
                             else "語音觸發"
                         )
                         file.write(
@@ -979,6 +1890,15 @@ def save_report(
                     f"freq={event['dominant_freq_mean']:.1f}Hz "
                     f"flatness={event['spectral_flatness']:.3f}\n"
                 )
+                if event.get("template_similarity") is not None:
+                    file.write(
+                        f"   -> 樣本相似度：{event['template_similarity']:.4f} "
+                        f"source={event.get('template_source', '')}\n"
+                    )
+                if event.get("selection_reason"):
+                    file.write(
+                        f"   -> 選擇原因：{event['selection_reason']}\n"
+                    )
                 file.write(
                     f"   -> 判定視窗：{start_time:.3f}s ~ {end_time:.3f}s\n"
                 )
@@ -1013,11 +1933,11 @@ def load_or_build_analysis(
             config,
         )
 
-    noise_events = detect_noise_events(config)
-    
-    if noise_events:
-        best_noise_event = max(noise_events, key=lambda x: x["score"])
-        noise_events = [best_noise_event]
+    noise_events = select_alarm_noise_events(
+        detect_noise_events(config),
+        segment_records,
+        config,
+    )
 
     noise_windows = merge_overlapping_windows(
         [
