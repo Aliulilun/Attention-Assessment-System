@@ -98,10 +98,10 @@ class SpeechConfig:
     repeated_nikan_min_duration_sec: float = 1.15
     repeated_nikan_interval_sec: float = 0.72
     repeated_nikan_tail_margin_sec: float = 0.18
-    
+
     # 強制 0 容錯 (確保不會誤判你好)
     keyword_max_edit_distance: int = 0
-    
+
     skip_whisper: bool = False
     noise_trigger_enabled: bool = True
     noise_sample_rate: int = 16000
@@ -114,16 +114,16 @@ class SpeechConfig:
     noise_reference_duration_sec: float = 2.5
     noise_template_padding_sec: float = 0.25
     noise_template_similarity_min: float = 0.58
-    
+
     # 怪聲偵測參數
-    noise_min_duration_sec: float = 0.4       
+    noise_min_duration_sec: float = 0.4
     noise_max_duration_sec: float = 4.0
-    noise_merge_gap_sec: float = 0.5          
+    noise_merge_gap_sec: float = 0.5
     noise_onset_backtrack_sec: float = 1.5
-    noise_low_band_hz: float = 1000.0          
-    noise_high_band_hz: float = 5000.0        
-    noise_flatness_max: float = 0.45           
-    noise_dominant_jump_hz: float = 500.0    
+    noise_low_band_hz: float = 1000.0
+    noise_high_band_hz: float = 5000.0
+    noise_flatness_max: float = 0.45
+    noise_dominant_jump_hz: float = 500.0
     noise_dominant_std_max: float = 400.0
     force_rebuild: bool = True
 
@@ -267,7 +267,7 @@ def build_config(args: argparse.Namespace) -> SpeechConfig:
         noise_reference_duration_sec=args.noise_reference_duration,
         noise_template_similarity_min=noise_template_threshold,
         noise_max_duration_sec=args.noise_max_duration,
-        force_rebuild=True, 
+        force_rebuild=True,
     )
 
 
@@ -290,7 +290,7 @@ def normalize_text(text: str) -> str:
     text = text.strip().lower()
     text = text.translate(TEXT_CANONICAL_MAP)
     text = re.sub(r"\s+", "", text)
-    text = re.sub(r"[^\w\u4e00-\u9fff]+", "", text)
+    text = re.sub(r"[^\w一-鿿]+", "", text)
     text = text.translate(DIGIT_CANONICAL_MAP)
     return text
 
@@ -784,7 +784,7 @@ def build_direct_keyword_events(
             detection_source,
             int(match["start_index"]),
         )
-        
+
         event_start = apply_time_offset(estimated_raw_start, config)
         event_end = apply_time_offset(
             estimated_raw_start + config.response_window_sec,
@@ -880,7 +880,7 @@ def is_music_context_record(record: Dict[str, Any]) -> bool:
     if any(keyword in normalized_text for keyword in MUSIC_CONTEXT_KEYWORDS):
         return True
 
-    if re.search(r"([\u4e00-\u9fff])\1{2,}", normalized_text):
+    if re.search(r"([一-鿿])\1{2,}", normalized_text):
         return True
 
     return False
@@ -1027,22 +1027,19 @@ def load_cache(config: SpeechConfig) -> Optional[Dict[str, Any]]:
 def transcribe_with_whisper(config: SpeechConfig) -> Dict[str, Any]:
     try:
         import whisper
-        import torch  
+        import torch
         torch.set_num_threads(4)
-        
+
     except ImportError as exc:
         raise RuntimeError(
             "找不到 whisper 套件。請先安裝 openai-whisper 與對應依賴。"
         ) from exc
 
-    # 🌟 修正：自動偵測 CUDA，讓 Whisper 在 GPU 上執行（hurry 批次模式語音預處理時
-    #         GPU 模型尚未載入，VRAM 有空間；後續 frame loop 讀快取不再執行本函式）
-    _w_device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f">> 載入 Whisper 模型：{config.model_name}（裝置：{_w_device}）")
-    model = whisper.load_model(config.model_name, device=_w_device)
+    print(f">> 載入 Whisper 模型：{config.model_name}")
+    model = whisper.load_model(config.model_name, device="cpu")
 
     print(">> 開始進行語音辨識...")
-    
+
     result = model.transcribe(
         config.video_path,
         language=config.language,
@@ -1051,7 +1048,7 @@ def transcribe_with_whisper(config: SpeechConfig) -> Dict[str, Any]:
         condition_on_previous_text=False,
         no_speech_threshold=0.3,
         logprob_threshold=-2.0,
-        word_timestamps=True, 
+        word_timestamps=True,
         compression_ratio_threshold=2.4,
         fp16=False,
         verbose=False,
@@ -1076,12 +1073,12 @@ def build_segment_records(
             continue
 
         normalized_text = normalize_text(text)
-        
+
         has_keyword = any(normalize_text(kw) in normalized_text for kw in config.keywords)
-        
+
         if normalized_text and normalized_text == last_normalized_text and not has_keyword:
             continue
-            
+
         last_normalized_text = normalized_text
 
         display_start_time = apply_time_offset(start_time, config)
@@ -1730,13 +1727,13 @@ def detect_noise_events(config: SpeechConfig) -> List[Dict[str, Any]]:
         raw_end_time = float(event["end"])
         start_time = apply_time_offset(raw_start_time, config)
         end_time = apply_time_offset(raw_end_time, config)
-        
+
         trigger_start = start_time
         trigger_end = apply_time_offset(
             raw_start_time + config.noise_response_window_sec,
             config,
         )
-        
+
         noise_events.append(
             {
                 "id": f"noise_{index:03d}",

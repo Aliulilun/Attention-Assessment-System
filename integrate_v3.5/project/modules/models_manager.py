@@ -16,7 +16,6 @@ class ModelManager:
         self.use_cuda = torch.cuda.is_available()
         if self.use_cuda:
             print(f">>> [ModelManager] 偵測到 GPU：{torch.cuda.get_device_name(0)}，啟用 CUDA 加速！")
-            torch.backends.cudnn.benchmark = True # 讓 cuDNN 自動尋找最適合的卷積演算法
         else:
             print(">>> [ModelManager] ⚠️ 沒有偵測到 CUDA，將使用 CPU 進行推論，速度會較慢。")
 

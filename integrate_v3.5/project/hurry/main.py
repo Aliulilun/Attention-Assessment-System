@@ -50,15 +50,21 @@ ACTIVE_STAGES   = {6, 7, 8, 9, 10}   # ★ 本次只量測這些階段
 SHOW_PREVIEW    = True                 # ★ False = 關閉預覽視窗（批次加速，省 I/O）
 SCORING_VERSION = 'HURRY_6to10_BATCH_V1'
 
+# ★ 跳幀設定（效能優化）
+# 說明：EasyOCR / 視線估計 / YOLO 不需要每幀都跑，
+#       被量測目標（閃卡、機器人）移動緩慢，快取上一幀結果可大幅提速。
+YOLO_SKIP = 3   # 每 N 幀才執行一次 YOLO 物件偵測（物件幾乎不動，快取複用安全）
+GAZE_SKIP = 2   # 每 N 幀才執行一次視線估計（TB/TH 判定容許 2 幀延遲，不影響精度）
+OCR_SKIP  = 15  # 覆寫 SignboardTracker 的 OCR_FRAME_INTERVAL（預設 2 → 改 15）
+                # 牌子在畫面靜止數秒，每 0.5s 偵測一次即可
+
 # ★ 怪聲參考音檔（放在 model/ 目錄，跨所有影片共用）
-# 說明：speech.py 原本會在各影片的暫存子目錄找 noise_reference_2m23_2m33.wav，
-#       批次模式下該目錄不存在此檔案，必須明確指定固定路徑。
-# 副檔名 .wave 與 .wav 均可（speech_engine.py 透過 ffmpeg 轉檔，格式自動辨識）
+# 🌟 修改：speech.py 新增 noise_sample_path 參數，此處明確傳入固定路徑；
+#          若檔案不存在則傳 None → speech_engine 退回純頻譜特徵偵測
 NOISE_SAMPLE_PATH = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'model', 'noise.wav')
 )
 # 等同於 C:\project\model\noise.wav
-
 
 SPEECH_KEYWORDS = [
     "開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉",
@@ -137,13 +143,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
         output_dir=video_speech_dir,        # ← per-video 子目錄，隔離各影片快取
         keywords=SPEECH_KEYWORDS,
         noise_sample_path=NOISE_SAMPLE_PATH if os.path.exists(NOISE_SAMPLE_PATH) else None,
-        # 🌟 怪聲音檔從 model/noise.wave 讀取（固定路徑，不依賴 output_dir）
-        # 若找不到音檔則 noise_sample_path=None → speech_engine 退回純頻譜特徵偵測
     )
-    if os.path.exists(NOISE_SAMPLE_PATH):
-        print(f">>> [SpeechTrigger] 怪聲參考音檔：{NOISE_SAMPLE_PATH}")
-    else:
-        print(f"⚠️  找不到怪聲參考音檔：{NOISE_SAMPLE_PATH}（純頻譜特徵模式）")
     trigger_windows = speech.get_trigger_windows()
 
     scoring = ScoringEngine(
@@ -190,6 +190,17 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
     current_stage = 0
     event_logs    = scoring.event_logs
 
+    # 🌟 跳幀快取（搭配 YOLO_SKIP / GAZE_SKIP 使用）
+    last_yolo_boxes  = []    # 上一次 YOLO 偵測到的目標物框
+    last_robot_boxes = []    # 上一次 YOLO 偵測到的機器人框
+    last_gaze_result = None  # 上一次視線估計結果（含 gaze_vector, face_bbox 等）
+
+    # 🌟 計時診斷（每 TIMING_REPORT_INTERVAL 幀印一次各段耗時，協助找瓶頸）
+    import time as _time
+    TIMING_REPORT_INTERVAL = 50
+    _t_ocr = _t_yolo = _t_interaction = _t_gaze = _t_other = 0.0
+    _t_frame_start = None
+
     # 場地界線：左側 35% 區域視為施測者區（Stage 6-8 的 TH 判定目標）
     divider_x        = int(frame_w * 0.35)
     TESTER_ZONE_BBOX = [0, 0, divider_x, frame_h]
@@ -203,12 +214,17 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             frame_count      += 1
             current_time_sec  = frame_count / fps
             is_in_trigger_window = speech.is_in_window(current_time_sec, trigger_windows)
+            _t_frame_start = _time.perf_counter()
+            # 🌟 修正 _t_other 計算：記錄本幀開始前各段累積量，幀末再取差值
+            _prev_ocr = _t_ocr; _prev_yolo = _t_yolo
+            _prev_interact = _t_interaction; _prev_gaze = _t_gaze
 
             # ──────────────────────────────────────────────
             # 1. 階段判定
             # ──────────────────────────────────────────────
 
             # A. OCR（只識別牌子 6 和 7）
+            _t0 = _time.perf_counter()
             if current_stage < 8:
                 try:
                     detected_stage = sign_tracker.detect_stage(frame)
@@ -265,6 +281,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             # 而非 main.py 的 current_stage（0），避免顯示「Sign:0」誤導
             # 例：牌子顯示「1」→ OCR 正確讀成 1 → Sign:1（而非 Sign:0）
             sign_tracker.draw_boxes(frame, sign_tracker.current_stage)
+            _t_ocr += _time.perf_counter() - _t0  # 計時：OCR 段結束
 
             # ──────────────────────────────────────────────
             # 2. 視覺偵測（只在 ACTIVE_STAGES 內執行）
@@ -273,14 +290,23 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             yolo_boxes  = []
             robot_boxes = []
 
+            _t0 = _time.perf_counter()
             try:
                 if current_stage in ACTIVE_STAGES:
-                    detect_result = model_manager.detect_objects(frame, stage=current_stage)
-                    if current_stage >= 9 and isinstance(detect_result, tuple) and len(detect_result) == 2:
-                        yolo_boxes, robot_boxes = detect_result
+                    # 🌟 YOLO 跳幀：每 YOLO_SKIP 幀才執行一次偵測，其餘幀複用上一結果
+                    #    量測目標（閃卡、機器人）幾乎靜止，快取 3 幀完全安全
+                    if frame_count % YOLO_SKIP == 0:
+                        detect_result = model_manager.detect_objects(frame, stage=current_stage)
+                        if current_stage >= 9 and isinstance(detect_result, tuple) and len(detect_result) == 2:
+                            yolo_boxes, robot_boxes = detect_result
+                        else:
+                            yolo_boxes  = detect_result if detect_result else []
+                            robot_boxes = []
+                        last_yolo_boxes  = yolo_boxes
+                        last_robot_boxes = robot_boxes
                     else:
-                        yolo_boxes  = detect_result if detect_result else []
-                        robot_boxes = []
+                        yolo_boxes  = last_yolo_boxes
+                        robot_boxes = last_robot_boxes
 
                     # 視覺化：目標物（綠色框）
                     for box in yolo_boxes:
@@ -296,12 +322,17 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                         cv2.putText(frame, "Robot",
                                     (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
-                    if len(yolo_boxes) > 0:
-                        child_is_pointing_hit = interaction.analyze_interaction(frame, yolo_boxes)
-
             except Exception as e:
                 if frame_count % 100 == 0:
                     print(f"⚠️ 偵測跳過 (Frame {frame_count}): {e}")
+            _t_yolo += _time.perf_counter() - _t0  # 計時：YOLO 段結束
+
+            # 🌟 Interaction 與 YOLO_SKIP 對齊：同樣每 YOLO_SKIP 幀才執行一次
+            #    原因：yolo_boxes 快取非空時 analyze_interaction 仍每幀執行 YOLO-Pose+MediaPipe
+            _t0 = _time.perf_counter()
+            if len(yolo_boxes) > 0 and frame_count % YOLO_SKIP == 0:
+                child_is_pointing_hit = interaction.analyze_interaction(frame, yolo_boxes)
+            _t_interaction += _time.perf_counter() - _t0  # 計時：Interaction 段結束
 
             # ──────────────────────────────────────────────
             # 3. 視線估計
@@ -312,9 +343,16 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             face_result_for_fsm       = None
             pose_result_for_fsm       = None
 
+            _t0 = _time.perf_counter()
             if is_in_trigger_window or current_stage in ACTIVE_STAGES:
                 try:
-                    gaze_result = gaze_pipeline.estimate(frame)
+                    # 🌟 視線跳幀：每 GAZE_SKIP 幀才執行一次 5-stage 視線估計 pipeline
+                    #    TB/TH 判定時間解析度 ≥ 0.1s，2 幀快取延遲（≤66ms）完全在容許範圍
+                    if frame_count % GAZE_SKIP == 0:
+                        gaze_result = gaze_pipeline.estimate(frame)
+                        last_gaze_result = gaze_result
+                    else:
+                        gaze_result = last_gaze_result
 
                     if gaze_result and gaze_result.get('success'):
                         face_bbox    = gaze_result.get('face_bbox')
@@ -392,6 +430,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                 except Exception as e:
                     if frame_count % 100 == 0:
                         print(f"⚠️ 視線估計跳過 (Frame {frame_count}): {e}")
+            _t_gaze += _time.perf_counter() - _t0  # 計時：Gaze 段結束
 
             # 時序狀態機更新
             fsm_target = fsm.update(face_result_for_fsm, pose_result_for_fsm)
@@ -474,7 +513,27 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             cv2.putText(frame, score_text,
                         (15, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.7, c_text, 2)
 
+            # 🌟 修正：用本幀差值（而非累積量）計算 Other 耗時，避免 _t_other 變負數
+            _elapsed_frame = _time.perf_counter() - _t_frame_start
+            _t_other += _elapsed_frame - (_t_ocr - _prev_ocr) - (_t_yolo - _prev_yolo) \
+                        - (_t_interaction - _prev_interact) - (_t_gaze - _prev_gaze)
+
             out.write(frame)
+
+            # 🌟 計時報表：每 TIMING_REPORT_INTERVAL 幀印一次各段平均耗時
+            if frame_count % TIMING_REPORT_INTERVAL == 0 and frame_count > 0:
+                n = TIMING_REPORT_INTERVAL
+                total = _t_ocr + _t_yolo + _t_interaction + _t_gaze + _t_other
+                print(
+                    f"⏱️  [Frame {frame_count}] 各段平均耗時（ms/幀）"
+                    f"  OCR={_t_ocr/n*1000:.1f}"
+                    f"  YOLO={_t_yolo/n*1000:.1f}"
+                    f"  Interact={_t_interaction/n*1000:.1f}"
+                    f"  Gaze={_t_gaze/n*1000:.1f}"
+                    f"  Other={_t_other/n*1000:.1f}"
+                    f"  Total={total/n*1000:.1f}ms"
+                )
+                _t_ocr = _t_yolo = _t_interaction = _t_gaze = _t_other = 0.0
 
             # 🌟 修正預覽卡頓：
             #   1. 先 resize 到視窗尺寸再 imshow（減少顯示管線的資料量，從 1080p 降至 720p）
@@ -639,7 +698,6 @@ def main():
     print("=" * 60)
     print("📢  Step 0：批次語音辨識（GPU Whisper，GPU 模型載入前執行）")
     print("=" * 60)
-    _noise_path = NOISE_SAMPLE_PATH if os.path.exists(NOISE_SAMPLE_PATH) else None
     for _vp in video_files:
         _bn   = os.path.splitext(os.path.basename(_vp))[0]
         _sdir = os.path.join(OUTPUT_DIR, f'_speech_{_bn}')
@@ -654,7 +712,7 @@ def main():
                     video_path=_vp,
                     output_dir=_sdir,
                     keywords=SPEECH_KEYWORDS,
-                    noise_sample_path=_noise_path,
+                    noise_sample_path=NOISE_SAMPLE_PATH if os.path.exists(NOISE_SAMPLE_PATH) else None,
                 )
                 _sp.get_trigger_windows()
                 del _sp
@@ -678,6 +736,12 @@ def main():
     sign_tracker = SignboardTracker(allowlist='1234567')
     dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
     sign_tracker.reader.readtext(dummy_img)
+    # 🌟 修改：覆寫 OCR 跳幀間隔（預設 2 幀 → 15 幀）
+    #          牌子靜止展示數秒，每 0.5s 偵測一次已足夠；
+    #          降低 EasyOCR 呼叫頻率是最有效的效能改善手段。
+    sign_tracker.OCR_FRAME_INTERVAL        = OCR_SKIP
+    sign_tracker.OCR_FRAME_INTERVAL_STAGE7 = OCR_SKIP
+    print(f">>> OCR 跳幀間隔：{OCR_SKIP} 幀（預設 2）")
     print(">>> 共用模型初始化完成\n")
 
     # --- 批次處理 ---

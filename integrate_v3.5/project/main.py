@@ -6,7 +6,7 @@ import sys
 import cv2
 import gc
 import traceback
-import numpy as np 
+import numpy as np
 import subprocess # 保留功能：用於呼叫 FFmpeg 進行音軌縫合
 import yaml       # 保留功能：用於讀取配置文件
 
@@ -19,11 +19,11 @@ from modules.interaction import InteractionEngine
 from modules.scoring_engine import ScoringEngine
 
 # 視線估計模組與視覺化工具
-from modules.gaze_estimation import GazeEstimationPipeline  
-from modules.gaze_estimation.visualization import draw_gaze_with_face_box  
+from modules.gaze_estimation import GazeEstimationPipeline
+from modules.gaze_estimation.visualization import draw_gaze_with_face_box
 
 # 導入時序有限狀態機管理員
-from modules.gaze_estimation.state_manager import GazeFSMManager 
+from modules.gaze_estimation.state_manager import GazeFSMManager
 
 # ==========================================
 # 🌟 視線-物體交集判定函數 (Ray Casting)
@@ -32,32 +32,32 @@ def ray_intersects_box(origin, dir_vec, box):
     ox, oy = origin
     dx, dy = dir_vec
     x1, y1, x2, y2 = box
-    
+
     dx = dx if dx != 0 else 1e-5
     dy = dy if dy != 0 else 1e-5
-    
+
     tx1 = (x1 - ox) / dx
     tx2 = (x2 - ox) / dx
     ty1 = (y1 - oy) / dy
     ty2 = (y2 - oy) / dy
-    
+
     tmin = max(min(tx1, tx2), min(ty1, ty2))
     tmax = min(max(tx1, tx2), max(ty1, ty2))
-    
+
     return tmax >= max(0, tmin)
 
 def is_gazing_at_box(gaze_result, object_bbox):
     if not gaze_result or not gaze_result.get('success'):
         return False
-    
+
     left_eye = gaze_result.get('left_eye')
     right_eye = gaze_result.get('right_eye')
     if left_eye is None or right_eye is None: return False
-    
+
     eye_center = ((left_eye[0] + right_eye[0]) / 2, (left_eye[1] + right_eye[1]) / 2)
-    gaze_vector = gaze_result['gaze_vector']  
+    gaze_vector = gaze_result['gaze_vector']
     direction = (gaze_vector[0], gaze_vector[1])
-    
+
     return ray_intersects_box(eye_center, direction, object_bbox)
 
 def check_gaze_on_objects(gaze_result, yolo_boxes):
@@ -80,40 +80,13 @@ try:
 except FileNotFoundError:
     CONFIG = {}
 
-# 影片選單：列出 video/ 資料夾中的影片，由使用者輸入編號選擇
-_VIDEO_DIR  = os.path.join(BASE_DIR, 'video')
-_VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.MP4', '.AVI', '.MOV', '.MKV'}
-
-if os.path.isdir(_VIDEO_DIR):
-    _video_list = sorted(f for f in os.listdir(_VIDEO_DIR) if os.path.splitext(f)[1] in _VIDEO_EXTS)
-else:
-    _video_list = []
-
-if not _video_list:
-    print(">>> [影片選單] video/ 資料夾沒有影片，請直接輸入完整路徑")
-    _inp = input("影片路徑：").strip().strip('"')
-    VIDEO_PATH = _inp if os.path.isabs(_inp) else os.path.join(BASE_DIR, _inp)
-else:
-    print(">>> [影片選單] 請選擇要分析的影片：")
-    for _i, _v in enumerate(_video_list, 1):
-        print(f"    [{_i}] {_v}")
-    while True:
-        try:
-            _sel = int(input(">>> 輸入編號：").strip())
-            if 1 <= _sel <= len(_video_list):
-                VIDEO_PATH = os.path.join(_VIDEO_DIR, _video_list[_sel - 1])
-                break
-        except ValueError:
-            pass
-        print(f"    請輸入 1 ~ {len(_video_list)} 的數字")
+VIDEO_PATH = os.path.join(BASE_DIR, CONFIG.get('video', {}).get('input_path', 'video/74.mp4'))
 MODEL_DIR = os.path.join(BASE_DIR, 'model')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
-# 🌟 怪聲音訊參考樣本（同 hurry/main.py 共用同一份）
-NOISE_SAMPLE_PATH = os.path.normpath(os.path.join(BASE_DIR, 'model', 'noise.wav'))
 
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
-    
+
 TEMP_VIDEO_PATH = os.path.join(OUTPUT_DIR, 'temp_no_audio_1to14_5.mp4')
 OUTPUT_VIDEO_PATH = os.path.join(OUTPUT_DIR, 'output_result_final_1to14_5.mp4')
 EVENT_LOG_PATH = os.path.join(OUTPUT_DIR, 'event_record_1to14_5.txt')
@@ -127,30 +100,21 @@ def main():
     print("🚀 多模態 AI 互動行為分析系統 (狀態機盲追蹤 + 1-14無縫全通版)...")
     print("==================================================")
     print(f">>> [評分系統] Scoring Version: {SCORING_VERSION}")
-    print(f">>> [影片]    {VIDEO_PATH}")
 
     if not os.path.exists(VIDEO_PATH):
-        print(f"❌ 錯誤：找不到影片：{VIDEO_PATH}")
-        print(f"   請確認路徑正確，或在 config.yaml 中設定 video.input_path")
-        sys.exit(1)
+        sys.exit(f"❌ 錯誤：找不到影片：{VIDEO_PATH}")
 
     # --- 系統初始化 ---
     print("\n>>> [系統] 正在啟動聽覺模組與讀取時間軸...")
-    
+
     # 🌟 採用 main.py 全字典字庫
     speech = SpeechTrigger(
         video_path=VIDEO_PATH,
         output_dir=OUTPUT_DIR,
-        keywords=["開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉", "機器人", "怪聲", "嗶", "逼", "[聲音]", "放煙火", "煙火", "放烟火", "烟火", "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"],
-        # 🌟 新增：怪聲音訊模板，避免 Whisper 初始提示幻覺導致 Stage 8 誤觸發
-        noise_sample_path=NOISE_SAMPLE_PATH if os.path.exists(NOISE_SAMPLE_PATH) else None,
+        keywords=["開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉", "機器人", "怪聲", "嗶", "逼", "[聲音]", "放煙火", "煙火", "放烟火", "烟火", "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"]
     )
-    if os.path.exists(NOISE_SAMPLE_PATH):
-        print(f">>> [SpeechTrigger] 怪聲參考音檔：{NOISE_SAMPLE_PATH}")
-    else:
-        print(f"⚠️  找不到怪聲參考音檔：{NOISE_SAMPLE_PATH}（純頻譜特徵模式）")
     trigger_windows = speech.get_trigger_windows()
-    
+
     scoring = ScoringEngine(
         cache_path=speech.cache_path,
         scoring_version=SCORING_VERSION,
@@ -159,10 +123,10 @@ def main():
 
     # 💡 只有 1~7 階段允許透過牌子偵測 (main.py 設定)
     sign_tracker = SignboardTracker(allowlist='1234567')
-    
+
     print(">>> [系統] 正在為 OCR 引擎暖機，消除硬體啟動延遲...")
     dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
-    sign_tracker.reader.readtext(dummy_img) 
+    sign_tracker.reader.readtext(dummy_img)
 
     # 模型大腦：負責自動切換各階段的各式模型
     model_manager = ModelManager(model_dir=MODEL_DIR)
@@ -177,11 +141,11 @@ def main():
     # --- 影片串流設定 ---
     cap = cv2.VideoCapture(VIDEO_PATH)
     if not cap.isOpened(): sys.exit("❌ 無法開啟影片")
-    
+
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
+
     out = cv2.VideoWriter(TEMP_VIDEO_PATH, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_w, frame_h))
 
     success, first_frame = cap.read()
@@ -222,7 +186,7 @@ def main():
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
-                
+
             frame_count += 1
             current_time_sec = frame_count / fps
             is_in_trigger_window = speech.is_in_window(current_time_sec, trigger_windows)
@@ -244,12 +208,6 @@ def main():
                 for s_idx in sorted(scoring.stage_start_times.keys()):
                     if current_time_sec >= scoring.stage_start_times[s_idx]:
                         if s_idx > expected_stage:
-                            # 🌟 修復：第 8 階段（怪聲代償）只能從第 7 階段跳入
-                            # 原因：scoring.stage_start_times[8] 的觸發時間由 Whisper 偵測的怪聲時間點決定，
-                            #       若在第 1 階段出現高頻聲被誤判，時間軸會直接從第 1 跳到第 8。
-                            #       加入此限制後，第 8 階段的時間軸推進必須等到 current_stage == 7。
-                            if s_idx == 8 and current_stage < 7:
-                                continue
                             expected_stage = s_idx
 
             if expected_stage > current_stage:
@@ -261,11 +219,11 @@ def main():
             if current_stage == 7:
                 WEIRD_SOUND_TRIGGERS = ["怪聲", "嗶", "逼", "[聲音]", "機器人"]
                 is_override_triggered = any(speech.check_voice_override(current_time_sec, keyword=kw) for kw in WEIRD_SOUND_TRIGGERS)
-                
+
                 if is_override_triggered:
                     print(f"\n>>> [Voice Override] {current_time_sec:.1f}s 聽覺模組偵測到怪聲/口令，代償啟動！切換至階段 8")
                     event_logs.append(f"[{current_time_sec:.1f}s] 聽覺代償：偵測到怪聲/口令，強制切換至第 8 階段")
-                    sign_tracker.force_stage(8) 
+                    sign_tracker.force_stage(8)
 
                     if current_stage != 8:
                         if hasattr(scoring, 'handle_stage_override'):
@@ -280,9 +238,9 @@ def main():
             # 2. 視覺偵測 (YOLO) 與模型派發
             # ==================================================
             child_is_pointing_hit = False
-            yolo_boxes = []  
+            yolo_boxes = []
             robot_boxes = []
-            
+
             try:
                 if current_stage > 0:
 
@@ -344,7 +302,7 @@ def main():
                         else:
                             label = f"Target (Stage {current_stage})"
                         cv2.putText(frame, label, (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
-                        
+
                     # 🌟 視覺化回饋：將「機器人」畫上橘色專屬追蹤框
                     for box in robot_boxes:
                         bx1, by1, bx2, by2 = map(int, box)
@@ -354,14 +312,14 @@ def main():
                     if len(yolo_boxes) > 0:
                         child_is_pointing_hit = interaction.analyze_interaction(frame, yolo_boxes)
             except Exception as e:
-                if frame_count % 100 == 0: 
+                if frame_count % 100 == 0:
                     print(f"⚠️ 偵測跳過 (Frame {frame_count}): {e}")
 
             # ==================================================
             # 3. 👁️ 核心整合重構：視線估計與時序狀態機幾何級聯
             # ==================================================
             gaze_result = None
-            child_is_gazing_at = False 
+            child_is_gazing_at = False
             child_is_gazing_at_tester = False
             face_result_for_fsm = None
             pose_result_for_fsm = None
@@ -369,7 +327,7 @@ def main():
             if is_in_trigger_window or current_stage > 0:
                 try:
                     gaze_result = gaze_pipeline.estimate(frame)
-                    
+
                     if gaze_result:
                         if gaze_result.get('success'):
                             # ─── 情況 A：正常追蹤期（面部特徵點完備） ───
@@ -382,7 +340,7 @@ def main():
                             confidence = gaze_result.get('confidence', 0.0)
                             left_eye = gaze_result.get('left_eye')
                             right_eye = gaze_result.get('right_eye')
-                            
+
                             if face_bbox is not None:
                                 frame = draw_gaze_with_face_box(
                                     frame, face_bbox, pitch_rad, yaw_rad,
@@ -390,18 +348,18 @@ def main():
                                     confidence=confidence, show_angles=True,
                                     show_direction_label=False, show_gaze_vector=True, bbox_format='xyxy'
                                 )
-                            
+
                             # 標準幾何射線要求（Ray Casting 碰撞判定 - 目標物）
                             if current_stage > 0 and len(yolo_boxes) > 0:
                                 child_is_gazing_at = check_gaze_on_objects(gaze_result, yolo_boxes)
-                                
+
                                 # 命中物體繪製黃色外框
                                 if child_is_gazing_at:
                                     for box in yolo_boxes:
                                         if is_gazing_at_box(gaze_result, box):
                                             cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 255), 5)
                                             cv2.putText(frame, "GAZING!", (int(box[0]), int(box[1])-15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                            
+
                             # ==================================================
                             # 🌟 動態 TH 判定邏輯 (看回施測者 vs 看回機器人)
                             # ==================================================
@@ -440,18 +398,18 @@ def main():
                             # 完整封裝傳遞給狀態機的資料
                             face_result_for_fsm = {
                                 'yolo_head_bbox': gaze_result.get('yolo_head_bbox'),
-                                'num_landmarks': gaze_result.get('num_landmarks', 468) 
+                                'num_landmarks': gaze_result.get('num_landmarks', 468)
                             }
                             pose_result_for_fsm = {'success': True, 'euler_angles': gaze_result.get('head_pose')}
-                        
+
                         else:
                             # ─── 情況 B：特徵點丟失，但前端 YOLO 依舊鎖定頭部 ───
                             if 'face_result' in gaze_result:
                                 face_result_for_fsm = gaze_result['face_result']
                             pose_result_for_fsm = None
-                            
+
                 except Exception as e:
-                    if frame_count % 100 == 0: 
+                    if frame_count % 100 == 0:
                         print(f"⚠️ 視線估計跳過 (Frame {frame_count}): {e}")
 
             # 呼叫時序狀態機進行記憶更新
@@ -461,10 +419,10 @@ def main():
             if fsm.current_state == "EXTREME_TURNING":
                 if current_stage in [3, 4] and fsm_target in ["LEFT_BACK_UPPER", "RIGHT_BACK_UPPER"]:
                     child_is_gazing_at = True
-                
+
                 if face_result_for_fsm is not None and face_result_for_fsm.get('yolo_head_bbox') is not None:
                     x1, y1, x2, y2 = map(int, face_result_for_fsm['yolo_head_bbox'])
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)  
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
                     cv2.putText(frame, "YOLO Head Only", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
 
@@ -487,7 +445,7 @@ def main():
                 child_is_gazing_at_tester=child_is_gazing_at_tester,
                 gaze_result=gaze_result,
                 robot_rays=[], # 舊機器人射線已徹底拔除
-                robot_boxes=robot_boxes, 
+                robot_boxes=robot_boxes,
                 yolo_boxes=yolo_boxes,
                 is_gazing_at_box_func=is_gazing_at_box,
                 tester_gaze_angles=tester_gaze_angles,
@@ -497,18 +455,18 @@ def main():
             # ==================================================
             # 5. 🖥️ 左上角 UI 資訊面板繪製
             # ==================================================
-            c_text = (0, 255, 255) 
+            c_text = (0, 255, 255)
             c_key = (0, 255, 0) if is_in_trigger_window else (150, 150, 150)
             c_hit = (0, 255, 0) if child_is_pointing_hit else (0, 0, 255)
             c_gaze = (0, 255, 0) if gaze_result and gaze_result.get('success') else (150, 150, 150)
-            c_gazing = (0, 255, 255) if child_is_gazing_at else (0, 0, 255) 
+            c_gazing = (0, 255, 255) if child_is_gazing_at else (0, 0, 255)
 
             cv2.putText(frame, f"Time:  {current_time_sec:.1f} s", (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_text, 2)
             cv2.putText(frame, f"Stage: {current_stage} (1-7 OCR / 8-14 Auto)", (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_text, 2)
-            
+
             keyword_text = "YES (Active)" if is_in_trigger_window else "NO (Idle)"
             cv2.putText(frame, f"Keyword Detected: {keyword_text}", (15, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_key, 2)
-            
+
             hit_text = "YES!" if child_is_pointing_hit else "NO"
             cv2.putText(frame, f"Child Pointing Hit: {hit_text}", (15, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_hit, 2)
 
@@ -519,7 +477,7 @@ def main():
             else:
                 status_str = f"Gaze: Blind Tracking ({fsm.current_state})" if fsm.current_state == "EXTREME_TURNING" else "Gaze: N/A"
                 cv2.putText(frame, status_str, (15, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
-            
+
             gazing_text = "YES!" if child_is_gazing_at else "NO"
             cv2.putText(frame, f"Child Gazing At Object: {gazing_text}", (15, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_gazing, 2)
 
@@ -557,12 +515,12 @@ def main():
             # 6. 輸出與記憶體管理
             out.write(frame)
             cv2.imshow("Multi-Modal AI System Preview", frame)
-            
+
             if frame_count % 100 == 0: gc.collect()
-            
+
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'): break
-            elif key == ord('r'):  
+            elif key == ord('r'):
                 current_stage = 0
                 sign_tracker.current_stage = 0
                 event_logs.append(f"[{current_time_sec:.1f}s] 手動重置階段為 0")
@@ -577,24 +535,24 @@ def main():
         cap.release()
         if 'out' in locals() and out is not None: out.release()
         cv2.destroyAllWindows()
-        
+
         # ==========================================
         # 🎵 7. 影音縫合階段 (Audio Muxing via FFmpeg)
         # ==========================================
         print("\n>>> [系統] 視覺畫面渲染完成，開始處理音軌縫合...")
         if os.path.exists(TEMP_VIDEO_PATH):
             ffmpeg_cmd = [
-                'ffmpeg', '-y', 
+                'ffmpeg', '-y',
                 '-i', TEMP_VIDEO_PATH,
                 '-i', VIDEO_PATH,
                 '-c:v', 'copy',
                 '-c:a', 'aac',
                 '-map', '0:v:0',
                 '-map', '1:a:0',
-                '-shortest', 
+                '-shortest',
                 OUTPUT_VIDEO_PATH
             ]
-            
+
             try:
                 print(f">>> [系統] 正在使用 FFmpeg 將聲音縫合回影片，這只要幾秒鐘...")
                 subprocess.run(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -609,6 +567,6 @@ def main():
                 print(f"👉 您的無聲影片已保留在：{TEMP_VIDEO_PATH}")
         else:
             print("❌ [錯誤] 找不到暫存的無聲影片，無法合併音軌.")
-            
+
 if __name__ == "__main__":
     main()

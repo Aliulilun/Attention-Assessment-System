@@ -8,7 +8,6 @@ import math
 from collections import deque
 from ultralytics import YOLO
 from typing import Optional, List, Dict, Tuple, Any
-import torch as _torch  # 🌟 新增：用於 YOLO-Pose CUDA 設備偵測
 
 class LegacyHandLms:
     def __init__(self, lms: Any):
@@ -40,10 +39,6 @@ class InteractionEngine:
         self.DWELL_FRAMES: int = dwell_frames
         self.divider_ratio: float = divider_ratio
         self.HOLD_FRAMES: int = hold_frames
-
-        # 🌟 偵測 CUDA 可用性，供 track() 呼叫時明確指定設備與 fp16
-        self._use_cuda = _torch.cuda.is_available()
-        self._pose_device = 0 if self._use_cuda else "cpu"
 
         print(">>> [InteractionEngine] 載入人類骨架模型 (YOLO-Pose)...")
         if pose_model_path and os.path.exists(pose_model_path):
@@ -91,35 +86,6 @@ class InteractionEngine:
             "Child": deque(maxlen=sma_window),
             "Tester": deque(maxlen=sma_window)
         }
-
-    def reset_tracking(self):
-        """
-        🌟 批次模式專用：重置所有跨幀追蹤狀態。
-        在每支影片開始前呼叫，防止前一支影片的 ByteTracker ID、射線歷史、
-        MediaPipe 時間戳等資料干擾新影片的判定。
-        """
-        # 清除跨幀投票與射線歷史
-        self.track_owner_votes.clear()
-        self.dwell_counters  = {"Child": 0, "Tester": 0}
-        self.hold_counters   = {"Child": 0, "Tester": 0}
-        for owner in self.ray_history:
-            self.ray_history[owner]["origin"].clear()
-            self.ray_history[owner]["vector"].clear()
-        for owner in self.ray_angle_history:
-            self.ray_angle_history[owner].clear()
-
-        # 重置 YOLO ByteTracker 內部狀態（防止舊 track ID 污染新影片）
-        try:
-            if (self.model_human.predictor is not None
-                    and hasattr(self.model_human.predictor, 'trackers')
-                    and self.model_human.predictor.trackers):
-                self.model_human.predictor.trackers[0].reset()
-        except Exception:
-            pass  # predictor 尚未初始化時忽略（第一支影片前）
-
-        # 重置 MediaPipe 時間戳（新影片從 0 重新計時，避免 VIDEO 模式 timestamp 跳躍）
-        self.timestamp_ms = 0
-        print(">>> [InteractionEngine] 追蹤狀態已重置（ByteTracker + MediaPipe timestamp）")
 
     @staticmethod
     def get_angle(v1: np.ndarray, v2: np.ndarray) -> float:
@@ -342,6 +308,24 @@ class InteractionEngine:
 
         return True
 
+    def reset_tracking(self):
+        """🌟 批次模式：重置所有影片間狀態（保留 YOLO / MediaPipe 模型）"""
+        self.timestamp_ms = 0
+        self.dwell_counters = {"Child": 0, "Tester": 0}
+        self.hold_counters  = {"Child": 0, "Tester": 0}
+        self.ray_history = {
+            "Child":  {"origin": deque(maxlen=self.ray_history["Child"]["origin"].maxlen),
+                       "vector": deque(maxlen=self.ray_history["Child"]["vector"].maxlen)},
+            "Tester": {"origin": deque(maxlen=self.ray_history["Tester"]["origin"].maxlen),
+                       "vector": deque(maxlen=self.ray_history["Tester"]["vector"].maxlen)},
+        }
+        self.track_owner_votes  = {}
+        self.ray_angle_history  = {
+            "Child":  deque(maxlen=self.ray_angle_history["Child"].maxlen),
+            "Tester": deque(maxlen=self.ray_angle_history["Tester"].maxlen),
+        }
+        print(">>> [InteractionEngine] tracking 狀態已重置")
+
     def analyze_interaction(self, frame: np.ndarray, yolo_boxes: List[Tuple[float, float, float, float]], elapsed_ms: Optional[int] = None) -> bool:
         FRAME_H, FRAME_W = frame.shape[:2]
         DIVIDER_X = int(FRAME_W * self.divider_ratio)
@@ -356,11 +340,7 @@ class InteractionEngine:
             self.draw_dashed_rectangle(frame, (int(yx1)-20, int(yy1)-20), (int(yx2)+20, int(yy2)+20), (150, 150, 150), 2)
 
         yolo_people = []
-        # 🌟 明確指定 device 與 half（fp16），確保 YOLO-Pose 使用 GPU 加速
-        pose_results = self.model_human.track(
-            frame, persist=True, imgsz=640, conf=0.5, verbose=False,
-            device=self._pose_device, half=self._use_cuda,
-        )
+        pose_results = self.model_human.track(frame, persist=True, imgsz=640, conf=0.5, verbose=False)
 
         tester_present = False
         child_present = False
