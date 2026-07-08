@@ -19,6 +19,21 @@ class SpeechTrigger:
                 "noise_reference_2m23_2m33.wav",
             )
         self.transcript_dict = {}
+        self.noise_trigger_windows = []  # 🌟 新增：只包含 noise.wav 模板比對命中的時間窗
+
+    def _load_noise_trigger_windows(self, data: dict):
+        """
+        從快取 JSON 中提取 noise_events 的 trigger_window，
+        供 Stage 7→8 判定「是否真的是 noise.wav 匹配的怪聲」。
+        """
+        noise_events = data.get("noise_events", [])
+        self.noise_trigger_windows = [
+            (float(e["trigger_window"][0]), float(e["trigger_window"][1]))
+            for e in noise_events
+            if isinstance(e.get("trigger_window"), (list, tuple))
+            and len(e["trigger_window"]) >= 2
+            and not e.get("rejected_reason")   # 被拒絕的事件不算命中
+        ]
 
     def get_trigger_windows(self):
         """
@@ -33,6 +48,8 @@ class SpeechTrigger:
                     data = json.load(f)
                 records = data.get("segment_records", [])
                 self.transcript_dict = {rec["start"]: rec["text"] for rec in records}
+                # 🌟 新增：載入 noise.wav 命中視窗
+                self._load_noise_trigger_windows(data)
                 windows = data.get("trigger_windows", [])
                 return [(float(w[0]), float(w[1])) for w in windows]
             except Exception as e:
@@ -82,6 +99,9 @@ class SpeechTrigger:
             records = data.get("segment_records", [])
             self.transcript_dict = {rec['start']: rec['text'] for rec in records}
 
+            # 🌟 新增：載入 noise.wav 命中視窗
+            self._load_noise_trigger_windows(data)
+
             # 讀取並回傳時間窗
             windows = data.get("trigger_windows", [])
             return [(float(w[0]), float(w[1])) for w in windows]
@@ -91,6 +111,10 @@ class SpeechTrigger:
 
     def is_in_window(self, current_time_sec, trigger_windows):
         return any(start <= current_time_sec <= end for start, end in trigger_windows)
+
+    def is_in_noise_window(self, current_time_sec: float) -> bool:
+        """🌟 新增：判定當前時間是否在 noise.wav 模板比對命中的視窗內（Stage 7→8 專用）"""
+        return any(start <= current_time_sec <= end for start, end in self.noise_trigger_windows)
 
     def check_voice_override(self, current_time_sec, keyword="機器人", time_tolerance=0.5):
         for start_time, text in self.transcript_dict.items():

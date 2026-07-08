@@ -68,11 +68,17 @@ NOISE_SAMPLE_PATH = os.path.normpath(
 
 SPEECH_KEYWORDS = [
     "開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉",
-    "機器人", "怪聲", "嗶", "逼", "[聲音]", "放煙火", "煙火", "放烟火", "烟火",
+    # 🌟 修改：移除 "怪聲", "嗶", "逼", "[聲音]"
+    #          這些是「聲音符號」而非口說詞語，Whisper 遇到怪聲時會自行寫入 [聲音]，
+    #          留在 SPEECH_KEYWORDS 裡會讓 Whisper 的音效記錄被當關鍵字觸發時間窗。
+    #          怪聲觸發改由 noise.wav 模板比對（is_in_noise_window）負責。
+    "機器人", "放煙火", "煙火", "放烟火", "烟火",
     "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"
 ]
 
-WEIRD_SOUND_TRIGGERS = ["怪聲", "嗶", "逼", "[聲音]", "機器人"]
+# 🌟 修改：怪聲觸發（Stage 7→8）改為純 noise.wav 模板比對，
+#          此清單保留「機器人」（口說詞語，仍需 Whisper 偵測）供其他覆寫邏輯使用
+WEIRD_SOUND_TRIGGERS = ["機器人"]
 
 
 # ============================================================
@@ -274,13 +280,12 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                 current_stage = expected_stage
 
             # C. 聽覺代償（Stage 7 → 8）
+            # 🌟 修改：怪聲觸發改為 noise.wav 模板比對命中（is_in_noise_window），
+            #          不再依賴 Whisper 關鍵字（[聲音]/嗶/逼），避免 Whisper 音效符號誤觸發
             if current_stage == 7:
-                is_override = any(
-                    speech.check_voice_override(current_time_sec, keyword=kw)
-                    for kw in WEIRD_SOUND_TRIGGERS
-                )
+                is_override = speech.is_in_noise_window(current_time_sec)
                 if is_override:
-                    print(f">>> [Voice Override] {current_time_sec:.1f}s 怪聲偵測，切換至階段 8")
+                    print(f">>> [Voice Override] {current_time_sec:.1f}s noise.wav 命中，切換至階段 8")
                     event_logs.append(f"[{current_time_sec:.1f}s] 聽覺代償：切換至第 8 階段")
                     sign_tracker.force_stage(8)
                     if hasattr(scoring, 'handle_stage_override'):
@@ -339,12 +344,14 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     print(f"⚠️ 偵測跳過 (Frame {frame_count}): {e}")
             _t_yolo += _time.perf_counter() - _t0  # 計時：YOLO 段結束
 
-            # 🌟 Interaction 與 YOLO_SKIP 對齊：同樣每 YOLO_SKIP 幀才執行一次
-            #    原因：yolo_boxes 快取非空時 analyze_interaction 仍每幀執行 YOLO-Pose+MediaPipe
+            # 🌟 修改：移除 len(yolo_boxes) > 0 的前置條件
+            #    原因：骨架偵測（YOLO-Pose）與手部偵測（MediaPipe）應始終執行，
+            #          讓使用者在預覽視窗中隨時看到 Body/Hand 標記與指向射線。
+            #          yolo_boxes 為空時 analyze_interaction 仍正常運行，只是無射線碰撞判定。
             _t0 = _time.perf_counter()
-            if len(yolo_boxes) > 0 and frame_count % YOLO_SKIP == 0:
+            if frame_count % YOLO_SKIP == 0:
                 try:
-                    # 🌟 新增：傳入影片內部精確時間（ms），搭配 _ts_base 確保跨影片 timestamp 單調遞增
+                    # 🌟 傳入影片內部精確時間（ms），搭配 _ts_base 確保跨影片 timestamp 單調遞增
                     _elapsed_ms = int(current_time_sec * 1000)
                     child_is_pointing_hit = interaction.analyze_interaction(frame, yolo_boxes, elapsed_ms=_elapsed_ms)
                 except Exception as _ia_err:
@@ -778,8 +785,11 @@ def main():
     print("📢  Step 1：載入 GPU 視覺模型")
     print("=" * 60)
     model_manager = ModelManager(model_dir=MODEL_DIR)
-    pose_path     = os.path.join(MODEL_DIR, 'yolo11n-pose.pt')
-    interaction   = InteractionEngine(pose_model_path=pose_path, sma_window=5)
+    pose_path = os.path.join(MODEL_DIR, 'yolo11n-pose.pt')
+    hand_path = os.path.join(MODEL_DIR, 'hand_landmarker.task')
+    # 🌟 修改：明確傳入 hand_model_path，避免 Windows junction/symlink 下
+    #          __file__ 解析到真實路徑（project_v3/）而非 C:\project\ 導致 FileNotFoundError
+    interaction = InteractionEngine(pose_model_path=pose_path, hand_model_path=hand_path, sma_window=5)
     gaze_pipeline = GazeEstimationPipeline(config=gaze_config)
 
     # 🌟 EasyOCR 只載入一次
