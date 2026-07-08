@@ -80,7 +80,7 @@ try:
 except FileNotFoundError:
     CONFIG = {}
 
-VIDEO_PATH = os.path.join(BASE_DIR, CONFIG.get('video', {}).get('input_path', 'video/105.mp4'))
+VIDEO_PATH = os.path.join(BASE_DIR, CONFIG.get('video', {}).get('input_path', 'video/51.mp4'))
 MODEL_DIR = os.path.join(BASE_DIR, 'model')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
@@ -108,10 +108,15 @@ def main():
     print("\n>>> [系統] 正在啟動聽覺模組與讀取時間軸...")
     
     # 🌟 採用 main.py 全字典字庫
+    # 🌟 修改：移除 "怪聲", "嗶", "逼", "[聲音]"
+    #          這些是「聲音符號」而非口說詞語，留著會讓 Whisper 音效記號被當關鍵字觸發。
+    #          Stage 7→8 怪聲觸發改由 noise.wav 模板比對（is_in_noise_window）負責。
     speech = SpeechTrigger(
-        video_path=VIDEO_PATH, 
-        output_dir=OUTPUT_DIR, 
-        keywords=["開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉", "機器人", "怪聲", "嗶", "逼", "[聲音]", "放煙火", "煙火", "放烟火", "烟火", "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"]
+        video_path=VIDEO_PATH,
+        output_dir=OUTPUT_DIR,
+        keywords=["開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉", "機器人", "放煙火", "煙火", "放烟火", "烟火", "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"],
+        # 🌟 修改：路徑改為 model/noise.wav（原 model/noisesample/noise.wav 不存在）
+        noise_sample_path=os.path.join(MODEL_DIR, 'noise.wav')
     )
     trigger_windows = speech.get_trigger_windows()
     
@@ -131,7 +136,10 @@ def main():
     # 模型大腦：負責自動切換各階段的各式模型
     model_manager = ModelManager(model_dir=MODEL_DIR)
     pose_path = os.path.join(MODEL_DIR, 'yolo11n-pose.pt')
-    interaction = InteractionEngine(pose_model_path=pose_path, sma_window=5)
+    # 🌟 修改：明確傳入 hand_model_path，避免 Windows junction/symlink 下 __file__
+    #          解析到真實路徑（C:\Users\wayne\Desktop\project\project_v3）找不到模型
+    hand_path = os.path.join(MODEL_DIR, 'hand_landmarker.task')
+    interaction = InteractionEngine(pose_model_path=pose_path, hand_model_path=hand_path, sma_window=5)
 
     print(">>> [系統] 正在啟動視線估計模組與時序狀態機...")
     gaze_config = CONFIG.get('gaze_estimation', {})
@@ -215,21 +223,18 @@ def main():
                 scoring.handle_stage_change(current_stage, expected_stage, current_time_sec)
                 current_stage = expected_stage
 
-            # C. 聽覺代償機制 (階段 7 -> 8) - 保留做為雙重保險
+            # C. 聽覺代償機制 (階段 7 -> 8)
+            # 🌟 修改：怪聲觸發改為 noise.wav 模板比對命中（is_in_noise_window），
+            #          不再依賴 Whisper 關鍵字（[聲音]/嗶/逼），避免音效符號誤觸發
             if current_stage == 7:
-                WEIRD_SOUND_TRIGGERS = ["怪聲", "嗶", "逼", "[聲音]", "機器人"]
-                is_override_triggered = any(speech.check_voice_override(current_time_sec, keyword=kw) for kw in WEIRD_SOUND_TRIGGERS)
-                
-                if is_override_triggered:
-                    print(f"\n>>> [Voice Override] {current_time_sec:.1f}s 聽覺模組偵測到怪聲/口令，代償啟動！切換至階段 8")
-                    event_logs.append(f"[{current_time_sec:.1f}s] 聽覺代償：偵測到怪聲/口令，強制切換至第 8 階段")
-                    sign_tracker.force_stage(8) 
-
-                    if current_stage != 8:
-                        if hasattr(scoring, 'handle_stage_override'):
-                            scoring.handle_stage_override(current_stage, 8, current_time_sec)
-                        else:
-                            scoring.handle_stage_change(current_stage, 8, current_time_sec)
+                if speech.is_in_noise_window(current_time_sec):
+                    print(f"\n>>> [Voice Override] {current_time_sec:.1f}s noise.wav 命中，代償啟動！切換至階段 8")
+                    event_logs.append(f"[{current_time_sec:.1f}s] 聽覺代償：noise.wav 命中，強制切換至第 8 階段")
+                    sign_tracker.force_stage(8)
+                    if hasattr(scoring, 'handle_stage_override'):
+                        scoring.handle_stage_override(current_stage, 8, current_time_sec)
+                    else:
+                        scoring.handle_stage_change(current_stage, 8, current_time_sec)
                     current_stage = 8
 
             sign_tracker.draw_boxes(frame, current_stage)
@@ -309,8 +314,10 @@ def main():
                         cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 165, 255), 2) # 橘色框
                         cv2.putText(frame, "Robot", (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
-                    if len(yolo_boxes) > 0:
-                        child_is_pointing_hit = interaction.analyze_interaction(frame, yolo_boxes)
+                    # 🌟 修改：移除 len(yolo_boxes) > 0 的前置條件
+                    #    骨架偵測（YOLO-Pose）與手部偵測（MediaPipe）應始終執行，
+                    #    yolo_boxes 為空時 analyze_interaction 仍正常運行，只是無射線碰撞判定。
+                    child_is_pointing_hit = interaction.analyze_interaction(frame, yolo_boxes)
             except Exception as e:
                 if frame_count % 100 == 0: 
                     print(f"⚠️ 偵測跳過 (Frame {frame_count}): {e}")

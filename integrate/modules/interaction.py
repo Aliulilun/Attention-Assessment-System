@@ -31,6 +31,7 @@ class InteractionEngine:
     def __init__(
         self,
         pose_model_path: Optional[str] = None,
+        hand_model_path: Optional[str] = None,  # 🌟 新增：明確傳入 hand_landmarker.task 路徑，避免 __file__ 解析錯誤
         sma_window: int = 5,
         dwell_frames: int = 3,
         divider_ratio: float = 0.35,
@@ -47,7 +48,15 @@ class InteractionEngine:
             self.model_human = YOLO('yolo11n-pose.pt')
 
         print(">>> [InteractionEngine] 載入 MediaPipe Hand Landmarker (Tasks API VIDEO MODE)...")
-        model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'model', 'hand_landmarker.task')
+        # 🌟 修改：優先使用明確傳入的 hand_model_path；
+        #          退回 __file__ 推算（Windows junction/symlink 下可能解析錯誤）
+        if hand_model_path and os.path.exists(hand_model_path):
+            model_path = hand_model_path
+        else:
+            model_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                'model', 'hand_landmarker.task'
+            )
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"❌ 找不到 MediaPipe 模型檔案: {model_path}")
 
@@ -346,7 +355,8 @@ class InteractionEngine:
             self.draw_dashed_rectangle(frame, (int(yx1)-20, int(yy1)-20), (int(yx2)+20, int(yy2)+20), (150, 150, 150), 2)
 
         yolo_people = []
-        pose_results = self.model_human.track(frame, persist=True, imgsz=640, conf=0.5, verbose=False)
+        # 🌟 修改：conf 0.5 → 0.3，施測者背對鏡頭或兒童被桌子遮擋時信心度不足 0.5 會整人消失
+        pose_results = self.model_human.track(frame, persist=True, imgsz=640, conf=0.3, verbose=False)
 
         tester_present = False
         child_present = False

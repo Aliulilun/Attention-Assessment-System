@@ -1,15 +1,27 @@
 import argparse
+import difflib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import wave
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
+
+WHISPER_INITIAL_PROMPT = (
+    "這是一段早療評估影片。請精確逐字記錄治療師的獨立指令，包含："
+    "你看、看這裡、準備、開始、321。請勿忽略短促的聲音，不要與雜音合併。"
+)
+
+# Whisper 在無語音／安靜片段常會把 initial_prompt 逐字「複誦」回來當作辨識結果。
+# 用來偵測並過濾這類幻覺片段的門檻：與 prompt 連續重疊字數、佔片段本身長度比例。
+PROMPT_ECHO_MIN_MATCH_LEN = 6
+PROMPT_ECHO_MIN_RATIO = 0.6
 
 DEFAULT_KEYWORDS = [
     "開始",
@@ -23,8 +35,8 @@ DEFAULT_KEYWORDS = [
 ]
 
 DEFAULT_NOISE_SAMPLE_FILENAME = "noise_reference_2m23_2m33.wav"
-DEFAULT_NOISE_TEMPLATE_THRESHOLD = 0.58
-DEFAULT_AUTO_NOISE_TEMPLATE_THRESHOLD = 0.65
+DEFAULT_NOISE_TEMPLATE_THRESHOLD = 0.85
+DEFAULT_AUTO_NOISE_TEMPLATE_THRESHOLD = 0.85
 
 TEXT_CANONICAL_MAP = str.maketrans(
     {
@@ -75,8 +87,8 @@ MUSIC_CONTEXT_KEYWORDS = {
     "画好了",
 }
 
-# 【第 12 版：怪聲參考樣本相似度版】
-MATCHING_ALGORITHM_VERSION = 13
+# 【第 15 版：合併組員 noise.wav 樣本比對修正 + 幻覺片段過濾】
+MATCHING_ALGORITHM_VERSION = 15
 
 
 @dataclass
@@ -293,6 +305,35 @@ def normalize_text(text: str) -> str:
     text = re.sub(r"[^\w一-鿿]+", "", text)
     text = text.translate(DIGIT_CANONICAL_MAP)
     return text
+
+
+_NORMALIZED_INITIAL_PROMPT = None
+
+
+def is_prompt_echo(normalized_segment_text: str) -> bool:
+    """判斷這段文字是否為 Whisper 對 initial_prompt 的複誦幻覺。
+
+    Whisper 在片段內沒有清楚語音時，常會把 initial_prompt 的一段連續文字
+    原封不動地「回聲」出來當作辨識結果（尤其是影片開頭的安靜段落）。
+    這裡比對片段文字與 prompt 的最長連續重疊子字串，若重疊長度與比例都
+    夠高，視為幻覺片段並予以捨棄，避免誤觸關鍵字（例如 prompt 裡本來就
+    含有「聲音」二字，會誤觸發 Stage 8 怪聲判定）。
+    """
+    global _NORMALIZED_INITIAL_PROMPT
+    if not normalized_segment_text:
+        return False
+    if _NORMALIZED_INITIAL_PROMPT is None:
+        _NORMALIZED_INITIAL_PROMPT = normalize_text(WHISPER_INITIAL_PROMPT)
+
+    matcher = difflib.SequenceMatcher(
+        None, normalized_segment_text, _NORMALIZED_INITIAL_PROMPT
+    )
+    match = matcher.find_longest_match(
+        0, len(normalized_segment_text), 0, len(_NORMALIZED_INITIAL_PROMPT)
+    )
+    if match.size < PROMPT_ECHO_MIN_MATCH_LEN:
+        return False
+    return (match.size / len(normalized_segment_text)) >= PROMPT_ECHO_MIN_RATIO
 
 
 def format_mmss(seconds: float) -> str:
@@ -880,7 +921,7 @@ def is_music_context_record(record: Dict[str, Any]) -> bool:
     if any(keyword in normalized_text for keyword in MUSIC_CONTEXT_KEYWORDS):
         return True
 
-    if re.search(r"([\u4e00-\u9fff])\1{2,}", normalized_text):
+    if re.search(r"([一-鿿])\1{2,}", normalized_text):
         return True
 
     return False
@@ -1035,15 +1076,17 @@ def transcribe_with_whisper(config: SpeechConfig) -> Dict[str, Any]:
             "找不到 whisper 套件。請先安裝 openai-whisper 與對應依賴。"
         ) from exc
 
-    print(f">> 載入 Whisper 模型：{config.model_name}")
-    model = whisper.load_model(config.model_name, device="cpu")
+    # 🌟 自動偵測 CUDA，若有可用 GPU 則用 GPU 執行 Whisper（沒有則自動退回 CPU）
+    whisper_device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f">> 載入 Whisper 模型：{config.model_name}（裝置：{whisper_device}）")
+    model = whisper.load_model(config.model_name, device=whisper_device)
 
     print(">> 開始進行語音辨識...")
 
     result = model.transcribe(
         config.video_path,
         language=config.language,
-        initial_prompt="這是一段早療評估影片。請精確逐字記錄治療師的獨立指令，包含：你看、看這裡、準備、開始、321。請勿忽略短促的聲音，不要與雜音合併。",
+        initial_prompt=WHISPER_INITIAL_PROMPT,
         temperature=0.0,
         condition_on_previous_text=False,
         no_speech_threshold=0.3,
@@ -1073,6 +1116,13 @@ def build_segment_records(
             continue
 
         normalized_text = normalize_text(text)
+
+        if is_prompt_echo(normalized_text):
+            print(
+                f"   ⚠️  忽略疑似 Whisper 幻覺片段（複誦 initial_prompt）："
+                f"[{format_mmss(start_time)}] {text}"
+            )
+            continue
 
         has_keyword = any(normalize_text(kw) in normalized_text for kw in config.keywords)
 
@@ -1180,9 +1230,8 @@ def load_wav_as_float32(wav_path: str) -> Tuple[np.ndarray, int]:
 def convert_audio_sample_to_wav(
     sample_path: str,
     target_sample_rate: int,
-    output_dir: str,
+    output_path: str,
 ) -> str:
-    output_path = os.path.join(output_dir, "noise_reference_sample.wav")
     command = [
         "ffmpeg",
         "-y",
@@ -1207,6 +1256,36 @@ def convert_audio_sample_to_wav(
     if completed.returncode != 0:
         raise RuntimeError(f"警報樣本轉檔失敗：{completed.stderr.strip()}")
     return output_path
+
+
+def load_reference_sample_audio(
+    sample_path: str,
+    target_sample_rate: int,
+) -> Tuple[np.ndarray, int]:
+    # 🌟 若參考樣本本身已經是 wav，直接讀取即可，省去 ffmpeg 轉檔開銷；
+    #    非 wav（例如 mp3）才需要先轉檔，且用系統暫存檔避免在 output_dir 留下垃圾檔。
+    if sample_path.lower().endswith(".wav"):
+        try:
+            return load_wav_as_float32(sample_path)
+        except Exception:
+            pass
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            temp_path = temp_file.name
+        converted_path = convert_audio_sample_to_wav(
+            sample_path,
+            target_sample_rate,
+            temp_path,
+        )
+        return load_wav_as_float32(converted_path)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def l2_normalize(vector: np.ndarray) -> Optional[np.ndarray]:
@@ -1292,12 +1371,10 @@ def build_reference_noise_profile(
     if not config.noise_sample_path:
         return None, None, None
 
-    sample_wav_path = convert_audio_sample_to_wav(
+    sample_audio, sample_rate = load_reference_sample_audio(
         config.noise_sample_path,
         sample_rate,
-        config.output_dir,
     )
-    sample_audio, sample_rate = load_wav_as_float32(sample_wav_path)
     profile = build_spectral_profile(
         sample_audio,
         sample_rate,
@@ -1431,6 +1508,12 @@ def detect_template_noise_event(
         current_start += hop_sec
 
     if best_start is None:
+        return None
+
+    # 🌟 修正：滑動視窗掃描全片，一定會找到「相對最相似」的一段，即使該段相似度
+    #    其實很低（片中根本沒有真正的怪聲）。這裡補上門檻檢查，未達標直接視為
+    #    沒有偵測到怪聲，避免每支影片都硬生出一個假的 Stage 8 候選事件。
+    if best_similarity < config.noise_template_similarity_min:
         return None
 
     raw_start_time = refine_noise_onset_time(

@@ -175,17 +175,21 @@ class ScoringEngine:
         self.created_object_t0_stages = set()
 
     def _build_absolute_timeline(self):
-        # Stage 8: 使用雜音事件 + 語音中的怪聲/聲音關鍵字
+        # Stage 8: 使用雜音事件 + 語音中明確命中「怪聲」關鍵字的事件
         # 🌟 修正：移除「機器人」避免將 Stage 9 之前的機器人登場誤判為 Stage 8 起點
+        # 🌟 修正：改用精確比對已配對到的關鍵字（event["keywords"]），不再對整句轉錄
+        # 文字做「聲音」/「声音」子字串搜尋。子字串比對會連同「[聲音]」這種泛用
+        # 佔位關鍵字、甚至 Whisper 幻覺片段（例如把 initial_prompt 逐字複誦回來）
+        # 一起誤判為 Stage 8 起點，且因為取 min() 只會讓起點被誤判得更早。
         t8_cands = [e["start"] for e in self.noise_events]
         for e in self.speech_events:
-            if any(k in e["text"] for k in ["怪聲", "聲音", "声音"]):
+            if "怪聲" in e["keywords"]:
                 t8_cands.append(e["start"])
         t8_cands.append(10**9)
         t8 = min(t8_cands)
         if t8 < 10**9:
             self.stage_start_times[8] = t8
-
+            
         # Stage 9: 畫畫關鍵字（需在 Stage 8 之後）
         t9_cands = []
         for e in self.speech_events:
@@ -196,7 +200,7 @@ class ScoringEngine:
         t9 = min(t9_cands)
         if t9 < 10**9:
             self.stage_start_times[9] = t9
-
+            
         # Stage 10: 煙火/321 倒數（需在 Stage 9 之後）
         t10_base = t9 if t9 < 10**9 else (t8 if t8 < 10**9 else 0)
         t10_cands = []
@@ -208,17 +212,17 @@ class ScoringEngine:
         t10 = min(t10_cands)
         if t10 < 10**9:
             self.stage_start_times[10] = t10
-
+            
         # Stage 11~14: 機器人說「小朋友 你看」才觸發（需在 Stage 10 之後）
         if t10 < 10**9:
             you_look_cands = []
             for e in self.speech_events:
                 if "小朋友" in e["text"] and "你看" in e["text"] and e["start"] > t10:
                     you_look_cands.append(e["start"])
-
+            
             # 將所有可能的時間點排序
             you_look_cands.sort()
-
+            
             # 🌟 新增：過濾時間相近的重複語音事件（冷卻機制）
             filtered_pointing_times = []
             for t in you_look_cands:
@@ -228,13 +232,13 @@ class ScoringEngine:
                     # 確保兩次「小朋友你看」至少間隔 2 秒
                     if t - filtered_pointing_times[-1] > 2.0:
                         filtered_pointing_times.append(t)
-
+                        
             # 取前 4 次有效的時間點
             pointing_times = filtered_pointing_times[:4]
-
+            
             for i, t in enumerate(pointing_times):
                 self.stage_start_times[11 + i] = t
-
+                
             if len(pointing_times) >= 2:
                 durations = [pointing_times[i+1] - pointing_times[i] for i in range(len(pointing_times)-1)]
                 self.avg_pointing_duration = sum(durations) / len(durations)
@@ -305,7 +309,7 @@ class ScoringEngine:
                     # 🌟 修改為固定加 10 秒（捨棄原本的 event["window_end"]）
                     new_record = create_trigger_record(
                         self.stage_names.get(8, "Stage8"), 8,
-                        event["start"], event["start"] + 10.0, None, "tester"
+                        event["start"], event["start"] + 10.0, None, "tester" 
                     )
 
             elif current_stage == 9 and abs(event["start"] - self.stage_start_times.get(9, -1)) < 0.05:
@@ -352,19 +356,19 @@ class ScoringEngine:
         for noise_event in self.noise_events:
             if noise_event["id"] in self.processed_noise_event_ids or noise_event["start"] > time_sec:
                 continue
-
+            
             if current_stage == 8 and abs(noise_event["start"] - self.stage_start_times.get(8, -1)) < 0.05:
                 if not already_active:
                     # 🌟 修改為固定加 10 秒（捨棄原本的 noise_event["window_end"]）
                     new_record = create_trigger_record(
                         self.stage_names.get(8, "Stage8"), 8,
-                        noise_event["start"], noise_event["start"] + 10.0, None, "tester"
+                        noise_event["start"], noise_event["start"] + 10.0, None, "tester" 
                     )
                     self.trigger_event_records.append(new_record)
                     self.active_trigger_records.append(new_record)
                     self.event_logs.append("[" + str(round(new_record['t0'],1)) + "s] T0(noise): " + new_record['label'])
                     already_active = True
-
+                    
             if time_sec > noise_event["end"]:
                 self.processed_noise_event_ids.add(noise_event["id"])
 
