@@ -108,6 +108,8 @@ else:
         print(f"    請輸入 1 ~ {len(_video_list)} 的數字")
 MODEL_DIR = os.path.join(BASE_DIR, 'model')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+# 🌟 怪聲音訊參考樣本（同 hurry/main.py 共用同一份）
+NOISE_SAMPLE_PATH = os.path.normpath(os.path.join(BASE_DIR, 'model', 'noise.wav'))
 
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
@@ -137,10 +139,16 @@ def main():
     
     # 🌟 採用 main.py 全字典字庫
     speech = SpeechTrigger(
-        video_path=VIDEO_PATH, 
-        output_dir=OUTPUT_DIR, 
-        keywords=["開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉", "機器人", "怪聲", "嗶", "逼", "[聲音]", "放煙火", "煙火", "放烟火", "烟火", "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"]
+        video_path=VIDEO_PATH,
+        output_dir=OUTPUT_DIR,
+        keywords=["開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉", "機器人", "怪聲", "嗶", "逼", "[聲音]", "放煙火", "煙火", "放烟火", "烟火", "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"],
+        # 🌟 新增：怪聲音訊模板，避免 Whisper 初始提示幻覺導致 Stage 8 誤觸發
+        noise_sample_path=NOISE_SAMPLE_PATH if os.path.exists(NOISE_SAMPLE_PATH) else None,
     )
+    if os.path.exists(NOISE_SAMPLE_PATH):
+        print(f">>> [SpeechTrigger] 怪聲參考音檔：{NOISE_SAMPLE_PATH}")
+    else:
+        print(f"⚠️  找不到怪聲參考音檔：{NOISE_SAMPLE_PATH}（純頻譜特徵模式）")
     trigger_windows = speech.get_trigger_windows()
     
     scoring = ScoringEngine(

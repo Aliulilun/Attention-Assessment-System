@@ -175,12 +175,12 @@ class ScoringEngine:
         self.created_object_t0_stages = set()
 
     def _build_absolute_timeline(self):
-        # Stage 8: 使用雜音事件 + 語音中的怪聲/聲音關鍵字
-        # 🌟 修正：移除「機器人」避免將 Stage 9 之前的機器人登場誤判為 Stage 8 起點
+        # Stage 8: 僅使用音訊雜音事件（noise_events）決定起點
+        # 🌟 修正：移除語音文字 fallback（"怪聲"/"聲音"/"声音" 關鍵字搜尋）
+        #          原因：Whisper initial_prompt 含「短促的聲音」，常被幻覺回逐字稿，
+        #                導致 "聲音" 文字在影片開頭即被匹配 → stage_start_times[8] 過早設定。
+        #                現改由 noise.wav 音訊模板比對（noise_events）全權決定 Stage 8 時間點。
         t8_cands = [e["start"] for e in self.noise_events]
-        for e in self.speech_events:
-            if any(k in e["text"] for k in ["怪聲", "聲音", "声音"]):
-                t8_cands.append(e["start"])
         t8_cands.append(10**9)
         t8 = min(t8_cands)
         if t8 < 10**9:
