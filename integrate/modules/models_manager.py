@@ -16,7 +16,6 @@ class ModelManager:
         self.use_cuda = torch.cuda.is_available()
         if self.use_cuda:
             print(f">>> [ModelManager] 偵測到 GPU：{torch.cuda.get_device_name(0)}，啟用 CUDA 加速！")
-            torch.backends.cudnn.benchmark = True # 讓 cuDNN 自動尋找最適合的卷積演算法
         else:
             print(">>> [ModelManager] ⚠️ 沒有偵測到 CUDA，將使用 CPU 進行推論，速度會較慢。")
 
@@ -29,7 +28,7 @@ class ModelManager:
             3: "background_model.pt",
             4: "background_model.pt",
             5: "balloon_model.pt",
-            6: "doll_model.pt",        
+            6: "doll_model.pt",
             7: "toy_model.pt",
             9: "tablet_model.pt",
             11: "front_model.pt",       # ✅ 新增：第 11~12 階段 (前方物品)
@@ -72,8 +71,10 @@ class ModelManager:
             if target_model_name:
                 target_model = self._get_model(target_model_name)
                 if target_model:
+                    # 🌟 修改：stage 11/12 信心度降至 0.15，確保能捕捉到低信心度偵測（實測約 0.22~0.33）
+                    target_conf = 0.15 if stage in [11, 12] else 0.75
                     results = target_model.predict(
-                        source=frame, conf=0.75, imgsz=960, 
+                        source=frame, conf=target_conf, imgsz=960,
                         device=0 if self.use_cuda else "cpu", half=self.use_cuda, verbose=False
                     )
                     if results and len(results) > 0:

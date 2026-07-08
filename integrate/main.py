@@ -80,16 +80,16 @@ try:
 except FileNotFoundError:
     CONFIG = {}
 
-VIDEO_PATH = os.path.join(BASE_DIR, CONFIG.get('video', {}).get('input_path', 'video/74.mp4'))
+VIDEO_PATH = os.path.join(BASE_DIR, CONFIG.get('video', {}).get('input_path', 'video/105.mp4'))
 MODEL_DIR = os.path.join(BASE_DIR, 'model')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
     
-TEMP_VIDEO_PATH = os.path.join(OUTPUT_DIR, 'temp_no_audio_1to14_3.mp4')
-OUTPUT_VIDEO_PATH = os.path.join(OUTPUT_DIR, 'output_result_final_1to14_3.mp4')
-EVENT_LOG_PATH = os.path.join(OUTPUT_DIR, 'event_record_1to14_3.txt')
+TEMP_VIDEO_PATH = os.path.join(OUTPUT_DIR, 'temp_no_audio_1to14_5.mp4')
+OUTPUT_VIDEO_PATH = os.path.join(OUTPUT_DIR, 'output_result_final_1to14_5.mp4')
+EVENT_LOG_PATH = os.path.join(OUTPUT_DIR, 'event_record_1to14_5.txt')
 
 # 採用 main.py 升級後的版本參數
 SCORING_VERSION = '1-14_ABSOLUTE_TEXT_V12_EXPANDED'
@@ -111,7 +111,7 @@ def main():
     speech = SpeechTrigger(
         video_path=VIDEO_PATH, 
         output_dir=OUTPUT_DIR, 
-        keywords=["開始", "321", "三二一", "準備", "你看", "看這裡", "準備囉", "機器人", "怪聲", "嗶", "逼", "[聲音]", "放煙火", "煙火", "放烟火", "烟火", "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"]
+        keywords=["開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉", "機器人", "怪聲", "嗶", "逼", "[聲音]", "放煙火", "煙火", "放烟火", "烟火", "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"]
     )
     trigger_windows = speech.get_trigger_windows()
     
@@ -158,6 +158,24 @@ def main():
     frame_count = 0
     current_stage = 0
     event_logs = scoring.event_logs
+
+    # 🌟 新增：Stage 11/12 近端物品「固定 ROI 框」
+    # 原理：桌面近端物品位置固定，不依賴 YOLO 偵測，改用硬寫比例框直接覆蓋桌面範圍。
+    # 座標以幀寬高的比例定義，適配任意解析度。
+    # 如需調整框位：修改下方四個比例值（0.0~1.0），重新執行即可。
+    #   LEFT_RATIO  = 左邊界 / 幀寬   RIGHT_RATIO = 右邊界 / 幀寬
+    #   TOP_RATIO   = 上邊界 / 幀高   BOT_RATIO   = 下邊界 / 幀高
+    FIXED_ROI_11_12_LEFT  = 0.0    # ← 桌面左界 (畫面最左)
+    FIXED_ROI_11_12_RIGHT = 1.0    # ← 桌面右界 (畫面最右)
+    FIXED_ROI_11_12_TOP   = 0.45   # ← 桌面上界 (涵蓋畫面下半部，確保右側較高處的物件進入搜尋範圍)
+    FIXED_ROI_11_12_BOT   = 1.0    # ← 桌面下界 (畫面底部)
+    fixed_roi_11_12 = (
+        int(frame_w * FIXED_ROI_11_12_LEFT),
+        int(frame_h * FIXED_ROI_11_12_TOP),
+        int(frame_w * FIXED_ROI_11_12_RIGHT),
+        int(frame_h * FIXED_ROI_11_12_BOT),
+    )
+    locked_boxes_11_12 = {}  # {stage_num: [box_list]} — 永久鎖定：一旦偵測到就不再更新
 
     # 場地界線：左側 35% 區域視為施測者區
     divider_x = int(frame_w * 0.35)
@@ -225,22 +243,65 @@ def main():
             
             try:
                 if current_stage > 0:
-                    # ✅ 由於 models_manager.py 已完全接管 1~14 階段的動態派發與雙模型機制，直接傳入 current_stage 即可
-                    detect_result = model_manager.detect_objects(frame, stage=current_stage)
-                    
-                    # 階段 9~14 會回傳 (目標框, 機器人框) 的 tuple
-                    if current_stage >= 9 and isinstance(detect_result, tuple) and len(detect_result) == 2:
-                        yolo_boxes, robot_boxes = detect_result
-                    else:
-                        # 階段 1~8 只會回傳單一目標框 list (若模型被拔除則會回傳空陣列 [])
-                        yolo_boxes = detect_result
 
-                    # 🌟 視覺化回饋：將 YOLO 抓到的「目標物品」畫上綠色追蹤框
+                    # 🌟 Stage 11/12：在固定 ROI 範圍內裁切畫面後再跑 YOLO
+                    # 固定框只是「搜尋範圍」，YOLO 在裁切區域內偵測到的才是真正的物品框
+                    if current_stage in [11, 12]:
+                        rx1, ry1, rx2, ry2 = fixed_roi_11_12
+
+                        # 視覺化：黃色框顯示搜尋範圍
+                        cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (255, 200, 0), 2)
+                        cv2.putText(frame, f"Search ROI (Stage {current_stage})",
+                                    (rx1 + 5, ry1 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+
+                        if current_stage in locked_boxes_11_12:
+                            # ✅ 已鎖定：直接用鎖定的框，完全跳過 YOLO
+                            yolo_boxes = locked_boxes_11_12[current_stage]
+                        else:
+                            # 尚未鎖定：裁切 ROI 後跑 YOLO
+                            roi_crop = frame[ry1:ry2, rx1:rx2]
+                            roi_result = model_manager.detect_objects(roi_crop, stage=current_stage)
+                            if isinstance(roi_result, tuple) and len(roi_result) == 2:
+                                roi_boxes, robot_boxes = roi_result
+                            else:
+                                roi_boxes = roi_result
+
+                            # 座標轉回原始幀空間
+                            yolo_boxes = [(x1 + rx1, y1 + ry1, x2 + rx1, y2 + ry1)
+                                          for (x1, y1, x2, y2) in roi_boxes]
+
+                            # 🔒 一旦偵測到就永久鎖定，後續幀不再執行 YOLO
+                            if len(yolo_boxes) > 0:
+                                locked_boxes_11_12[current_stage] = list(yolo_boxes)
+                                print(f">>> [Stage {current_stage}] 🔒 目標物已鎖定：{yolo_boxes}")
+
+                        # 機器人框對完整幀另外取（不受 ROI 限制）
+                        full_result = model_manager.detect_objects(frame, stage=current_stage)
+                        if isinstance(full_result, tuple) and len(full_result) == 2:
+                            _, robot_boxes = full_result
+
+                    else:
+                        # 其他階段：正常對完整幀偵測
+                        detect_result = model_manager.detect_objects(frame, stage=current_stage)
+                        if current_stage >= 9 and isinstance(detect_result, tuple) and len(detect_result) == 2:
+                            yolo_boxes, robot_boxes = detect_result
+                        else:
+                            yolo_boxes = detect_result
+
+                    # 🌟 視覺化：YOLO 偵測到的目標物品（鎖定=青色粗框 / 一般=綠色細框）
+                    is_locked_box = current_stage in locked_boxes_11_12
+                    box_color = (0, 255, 255) if is_locked_box else (0, 255, 0)
+                    box_thick = 3 if is_locked_box else 2
                     for box in yolo_boxes:
                         bx1, by1, bx2, by2 = map(int, box)
-                        cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
-                        label = "Tablet (Stage 9)" if current_stage == 9 else f"Target (Stage {current_stage})"
-                        cv2.putText(frame, label, (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                        cv2.rectangle(frame, (bx1, by1), (bx2, by2), box_color, box_thick)
+                        if current_stage == 9:
+                            label = "Tablet (Stage 9)"
+                        elif is_locked_box:
+                            label = f"LOCKED (Stage {current_stage})"
+                        else:
+                            label = f"Target (Stage {current_stage})"
+                        cv2.putText(frame, label, (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
                         
                     # 🌟 視覺化回饋：將「機器人」畫上橘色專屬追蹤框
                     for box in robot_boxes:

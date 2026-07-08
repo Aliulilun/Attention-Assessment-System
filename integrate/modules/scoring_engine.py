@@ -185,6 +185,7 @@ class ScoringEngine:
         t8 = min(t8_cands)
         if t8 < 10**9:
             self.stage_start_times[8] = t8
+
         # Stage 9: 畫畫關鍵字（需在 Stage 8 之後）
         t9_cands = []
         for e in self.speech_events:
@@ -195,6 +196,7 @@ class ScoringEngine:
         t9 = min(t9_cands)
         if t9 < 10**9:
             self.stage_start_times[9] = t9
+
         # Stage 10: 煙火/321 倒數（需在 Stage 9 之後）
         t10_base = t9 if t9 < 10**9 else (t8 if t8 < 10**9 else 0)
         t10_cands = []
@@ -206,16 +208,33 @@ class ScoringEngine:
         t10 = min(t10_cands)
         if t10 < 10**9:
             self.stage_start_times[10] = t10
-        # Stage 11~14: 「你看」倒數（需在 Stage 10 之後）
+
+        # Stage 11~14: 機器人說「小朋友 你看」才觸發（需在 Stage 10 之後）
         if t10 < 10**9:
             you_look_cands = []
             for e in self.speech_events:
-                if "你看" in e["text"] and e["start"] > t10:
+                if "小朋友" in e["text"] and "你看" in e["text"] and e["start"] > t10:
                     you_look_cands.append(e["start"])
-            you_look_events = sorted(list(set(you_look_cands)))
-            pointing_times = you_look_events[:4]
+
+            # 將所有可能的時間點排序
+            you_look_cands.sort()
+
+            # 🌟 新增：過濾時間相近的重複語音事件（冷卻機制）
+            filtered_pointing_times = []
+            for t in you_look_cands:
+                if not filtered_pointing_times:
+                    filtered_pointing_times.append(t)
+                else:
+                    # 確保兩次「小朋友你看」至少間隔 2 秒
+                    if t - filtered_pointing_times[-1] > 2.0:
+                        filtered_pointing_times.append(t)
+
+            # 取前 4 次有效的時間點
+            pointing_times = filtered_pointing_times[:4]
+
             for i, t in enumerate(pointing_times):
                 self.stage_start_times[11 + i] = t
+
             if len(pointing_times) >= 2:
                 durations = [pointing_times[i+1] - pointing_times[i] for i in range(len(pointing_times)-1)]
                 self.avg_pointing_duration = sum(durations) / len(durations)
@@ -263,17 +282,18 @@ class ScoringEngine:
         # --------------------------------------------------
         # 1. T0 建立
         # --------------------------------------------------
+        # 🌟 統一檢查：當前階段是否已經有一筆尚未關閉的計分紀錄？（防止每一幀重複建立）
+        already_active = any(
+            r["stage"] == current_stage and not r.get("closed")
+            for r in self.active_trigger_records
+        )
+
         for event in self.speech_events:
             if event["id"] in self.processed_speech_event_ids or event["start"] > time_sec:
                 continue
             new_record = None
 
             if current_stage in [1, 2, 3, 4] and "你看" in event["text"]:
-                # 🌟 修正：同一 Stage 只允許一筆活躍的 T0 record，防止 Whisper 複述造成重複建立
-                already_active = any(
-                    r["stage"] == current_stage and not r.get("closed")
-                    for r in self.active_trigger_records
-                )
                 if not already_active:
                     new_record = create_trigger_record(
                         self.stage_names.get(current_stage, "Stage"+str(current_stage)),
@@ -281,43 +301,49 @@ class ScoringEngine:
                     )
 
             elif current_stage == 8 and abs(event["start"] - self.stage_start_times.get(8, -1)) < 0.05:
-                new_record = create_trigger_record(
-                    self.stage_names.get(8, "Stage8"), 8,
-                    event["start"], event["window_end"], None, "tester"
-                )
+                if not already_active:
+                    # 🌟 修改為固定加 10 秒（捨棄原本的 event["window_end"]）
+                    new_record = create_trigger_record(
+                        self.stage_names.get(8, "Stage8"), 8,
+                        event["start"], event["start"] + 10.0, None, "tester"
+                    )
 
             elif current_stage == 9 and abs(event["start"] - self.stage_start_times.get(9, -1)) < 0.05:
-                s9_end = event["start"] + 15.0
-                for e in self.speech_events:
-                    if e["start"] > event["start"] and any(k in e["text"] for k in ["画好了", "畫好了", "你看"]):
-                        s9_end = e["start"] + 3.0
-                        break
-                new_record = create_trigger_record(
-                    self.stage_names.get(9, "Stage9"), 9,
-                    event["start"], s9_end, "object", "robot_box"
-                )
+                if not already_active:
+                    s9_end = event["start"] + 15.0
+                    for e in self.speech_events:
+                        if e["start"] > event["start"] and any(k in e["text"] for k in ["画好了", "畫好了", "你看"]):
+                            s9_end = e["start"] + 3.0
+                            break
+                    new_record = create_trigger_record(
+                        self.stage_names.get(9, "Stage9"), 9,
+                        event["start"], s9_end, "object", "robot_box"
+                    )
 
             elif current_stage == 10 and abs(event["start"] - self.stage_start_times.get(10, -1)) < 0.05:
-                # 🌟 修正：視窗從 3s 拉長至 8s，給兒童更多時間看回機器人
-                new_record = create_trigger_record(
-                    self.stage_names.get(10, "Stage10"), 10,
-                    event["start"], event["start"] + 8.0, None, "robot_box"
-                )
+                if not already_active:
+                    new_record = create_trigger_record(
+                        self.stage_names.get(10, "Stage10"), 10,
+                        event["start"], event["start"] + 8.0, None, "robot_box"
+                    )
 
             elif 11 <= current_stage <= 14 and abs(event["start"] - self.stage_start_times.get(current_stage, -1)) < 0.05:
-                end_time = self.stage_start_times.get(
-                    current_stage + 1,
-                    event["start"] + getattr(self, "avg_pointing_duration", 3.0)
-                )
-                new_record = create_trigger_record(
-                    self.stage_names.get(current_stage, "Stage"+str(current_stage)),
-                    current_stage, event["start"], end_time, "object", "robot_box"
-                )
+                if not already_active:
+                    end_time = self.stage_start_times.get(
+                        current_stage + 1,
+                        event["start"] + getattr(self, "avg_pointing_duration", 3.0)
+                    )
+                    new_record = create_trigger_record(
+                        self.stage_names.get(current_stage, "Stage"+str(current_stage)),
+                        current_stage, event["start"], end_time, "object", "robot_box"
+                    )
 
             if new_record:
                 self.trigger_event_records.append(new_record)
                 self.active_trigger_records.append(new_record)
                 self.event_logs.append("[" + str(round(new_record['t0'],1)) + "s] T0: " + new_record['label'])
+                # 🌟 建立後馬上將狀態設為 True，防止在同一個 frame 迴圈內被其他 event 重複觸發
+                already_active = True
 
             if time_sec > event["end"]:
                 self.processed_speech_event_ids.add(event["id"])
@@ -326,14 +352,19 @@ class ScoringEngine:
         for noise_event in self.noise_events:
             if noise_event["id"] in self.processed_noise_event_ids or noise_event["start"] > time_sec:
                 continue
+
             if current_stage == 8 and abs(noise_event["start"] - self.stage_start_times.get(8, -1)) < 0.05:
-                new_record = create_trigger_record(
-                    self.stage_names.get(8, "Stage8"), 8,
-                    noise_event["start"], noise_event["window_end"], None, "tester"
-                )
-                self.trigger_event_records.append(new_record)
-                self.active_trigger_records.append(new_record)
-                self.event_logs.append("[" + str(round(new_record['t0'],1)) + "s] T0(noise): " + new_record['label'])
+                if not already_active:
+                    # 🌟 修改為固定加 10 秒（捨棄原本的 noise_event["window_end"]）
+                    new_record = create_trigger_record(
+                        self.stage_names.get(8, "Stage8"), 8,
+                        noise_event["start"], noise_event["start"] + 10.0, None, "tester"
+                    )
+                    self.trigger_event_records.append(new_record)
+                    self.active_trigger_records.append(new_record)
+                    self.event_logs.append("[" + str(round(new_record['t0'],1)) + "s] T0(noise): " + new_record['label'])
+                    already_active = True
+
             if time_sec > noise_event["end"]:
                 self.processed_noise_event_ids.add(noise_event["id"])
 
@@ -345,6 +376,7 @@ class ScoringEngine:
             self.trigger_event_records.append(obj_record)
             self.active_trigger_records.append(obj_record)
             self.event_logs.append("[" + str(round(time_sec,1)) + "s] T0(obj): " + lbl)
+            already_active = True
 
         # --------------------------------------------------
         # 2. Pointing / TB / TH 計次
@@ -431,7 +463,7 @@ class ScoringEngine:
                 self.active_you_look_scoring_stage = current_stage
                 self.active_you_look_scoring_window = matching_you_look_window
         is_in_you_look_scoring_window = (self.active_you_look_scoring_stage == current_stage and
-                                          self.active_you_look_scoring_window is not None)
+                                         self.active_you_look_scoring_window is not None)
         is_stage_scoring_allowed = (current_stage > 0 and
                                      (current_stage not in [1, 2, 3, 4, 9] or is_in_you_look_scoring_window))
         is_new_gazing_event = is_stage_scoring_allowed and child_is_gazing_at and not self.prev_gaze_state
