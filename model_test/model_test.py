@@ -7,7 +7,7 @@ import time
 import numpy as np
 import gc
 
-BASE_DIR = Path(r"C:\Users\wayne\Desktop\project\model_test")
+BASE_DIR = Path(r"C:\Users\wayne\Desktop\project\github\model_test")
 INPUT_DIR = BASE_DIR / "input"
 MODEL_DIR = BASE_DIR / "model"   # 模型請放在 model_test/model
 
