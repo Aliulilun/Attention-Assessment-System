@@ -80,7 +80,7 @@ try:
 except FileNotFoundError:
     CONFIG = {}
 
-VIDEO_PATH = os.path.join(BASE_DIR, CONFIG.get('video', {}).get('input_path', 'video/51.mp4'))
+VIDEO_PATH = os.path.join(BASE_DIR, CONFIG.get('video', {}).get('input_path', 'video/106.mp4'))
 MODEL_DIR = os.path.join(BASE_DIR, 'model')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
