@@ -1035,8 +1035,11 @@ def transcribe_with_whisper(config: SpeechConfig) -> Dict[str, Any]:
             "找不到 whisper 套件。請先安裝 openai-whisper 與對應依賴。"
         ) from exc
 
-    print(f">> 載入 Whisper 模型：{config.model_name}")
-    model = whisper.load_model(config.model_name, device="cpu")
+    # 🌟 修正：自動偵測 CUDA，讓 Whisper 在 GPU 上執行（hurry 批次模式語音預處理時
+    #         GPU 模型尚未載入，VRAM 有空間；後續 frame loop 讀快取不再執行本函式）
+    _w_device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f">> 載入 Whisper 模型：{config.model_name}（裝置：{_w_device}）")
+    model = whisper.load_model(config.model_name, device=_w_device)
 
     print(">> 開始進行語音辨識...")
     

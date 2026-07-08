@@ -68,6 +68,9 @@ class SignboardTracker:
         self._stage_lock_counter  = 0     # 目前鎖定剩餘幀數（每幀遞減）
         self.SKIN_RATIO_THRESHOLD = 0.40  # 🌟 OCR 偵測框膚色比例 > 此值 → 視為手遮擋，拒絕本幀
         self._roi_expanded        = False # 首次偵測到牌子後是否已放寬 ROI 限制
+        # 🌟 換牌位置凍結：手遮擋期間完全停止追蹤器位置更新，讓掃描框釘在牌子原位
+        # 原理：換牌時牌子位置不動，只有手在移動；凍結後手退走即可在原位辨識新牌子
+        self._occlusion_freeze    = False
 
         self._kcf_create = cv2.TrackerKCF_create if hasattr(cv2, 'TrackerKCF_create') \
                            else cv2.TrackerKCF.create  # API 版本相容偵測（只執行一次）
@@ -106,6 +109,7 @@ class SignboardTracker:
         # 🌟 換牌保護重置
         self._stage_lock_counter = 0
         self._roi_expanded       = False
+        self._occlusion_freeze   = False
         print(">>> [SignboardTracker] 狀態已重置（reader/templates 保留，跳過重新載入）")
 
     def initialize_roi(self, first_frame):
@@ -437,7 +441,7 @@ class SignboardTracker:
                     # 微抖動死區
                     elif dx <= self.KCF_JITTER_ZONE and dy <= self.KCF_JITTER_ZONE:
                         accept = False
-                if accept:
+                if accept and not self._occlusion_freeze:  # 🌟 凍結期間：追蹤器繼續跑但結果不寫入
                     self.last_valid_box = (tx, ty, tw, th)
                     self._update_roi_ema(tx + tw // 2, ty + th // 2)
             else:
@@ -445,7 +449,8 @@ class SignboardTracker:
 
         # ── 2. 黃框置中（每幀）────────────────────────────────────────────────
         # 若黃框中心偏離 sign 框超過 RECENTER_MIN，立即修正（上限 RECENTER_MAX）
-        if self.last_valid_box is not None and self.current_crop_coords != (0, 0, 0, 0):
+        if self.last_valid_box is not None and self.current_crop_coords != (0, 0, 0, 0) \
+                and not self._occlusion_freeze:  # 🌟 凍結期間不移動掃描框，維持牌子原位
             cx1, cy1, cx2, cy2 = self.current_crop_coords
             bx, by, bw, bh = self.last_valid_box
             sign_cx = bx + bw // 2
@@ -466,11 +471,13 @@ class SignboardTracker:
         # ── 3. 應急框管理（每幀）──────────────────────────────────────────────
         # 首次達閾值時進入應急框模式（清 tracker）；保持到連續 FALLBACK_EXIT_STREAK 次成功才退出
         if (self.no_detect_frames >= self.NO_DETECT_FALLBACK
-                and not self._fallback_active and self.current_stage != 7):
+                and not self._fallback_active and self.current_stage != 7
+                and not self._occlusion_freeze):  # 🌟 凍結期間不進入應急框（牌子在原位，不需擴框）
             self._fallback_active = True
             self._fallback_exit_count = 0
             self.tracker = None
-        if self._fallback_active and self.current_stage != 7:
+        if self._fallback_active and self.current_stage != 7 \
+                and not self._occlusion_freeze:  # 🌟 凍結期間不套用應急框座標（維持原位凍結）
             fh, fw = frame.shape[:2]
             cx = self.roi_x + self.roi_w // 2
             cy = self.roi_y + self.roi_h // 2
@@ -497,7 +504,9 @@ class SignboardTracker:
                         and self.lost_patience <= self.PATIENCE_THRESHOLD
                         and not force_full_scan)
 
-        if use_tracking and self.current_crop_coords != (0, 0, 0, 0):
+        if (use_tracking or self._occlusion_freeze) and self.current_crop_coords != (0, 0, 0, 0):
+            # 🌟 凍結期間：即使 use_tracking=False（lost_patience 超標 / force_full_scan），
+            #    也繼續在凍結的掃描框搜尋，確保手退走後立即在牌子原位辨識到新牌
             crop_x1, crop_y1, crop_x2, crop_y2 = self.current_crop_coords
         else:
             crop_x1, crop_y1, crop_x2, crop_y2 = full_roi_x1, full_roi_y1, full_roi_x2, full_roi_y2
@@ -511,7 +520,8 @@ class SignboardTracker:
 
         # ── 7. 備援全域掃描（純位置重錨）──────────────────────────────────────
         # 追蹤框掃不到時補做全域掃描，只更新 last_valid_box，不計入 history_results
-        if best_stage_num == -1 and use_tracking:
+        # 🌟 凍結期間跳過：避免備援掃描誤把手臂的 OCR 結果當位置寫入 last_valid_box
+        if best_stage_num == -1 and use_tracking and not self._occlusion_freeze:
             backup_stage_num, backup_bbox, _ = self._run_ocr_on_crop(
                 frame, full_roi_x1, full_roi_y1, full_roi_x2, full_roi_y2, min_stage=self.current_stage)
             if backup_stage_num != -1 and backup_stage_num >= self.current_stage:
@@ -568,10 +578,15 @@ class SignboardTracker:
             # 🌟 手遮擋偵測：換牌時手擋住牌子 → 膚色比例超標 → 拒絕本幀，清空投票歷史
             _hand_blocking = self._is_hand_occluding(frame, abs_bx, abs_by, abs_bw, abs_bh)
             if _hand_blocking:
+                # 🌟 位置凍結：手正在遮擋牌子，停止所有位置更新
+                # 牌子位置不動（只有手在動），凍結掃描框讓手退走後立刻在原位找到新牌
+                self._occlusion_freeze = True
                 self.lost_patience += 1
-                self.no_detect_frames = 0      # 🌟 修正：OCR 有偵測到東西（只是拒絕），不應累積 fallback 計數
+                self.no_detect_frames = 0      # 🌟 OCR 有偵測到東西（只是拒絕），不應累積 fallback 計數
                 self.history_results.clear()   # 遮擋期間清票，防止殘票累積觸發誤升
             else:
+                # 🌟 解凍：手已離開，OCR 在原位找到新牌，恢復正常追蹤
+                self._occlusion_freeze = False
                 self.last_valid_box = (abs_bx, abs_by, abs_bw, abs_bh)
                 self.lost_patience = 0
                 self.no_detect_frames = 0

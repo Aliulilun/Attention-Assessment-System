@@ -80,7 +80,32 @@ try:
 except FileNotFoundError:
     CONFIG = {}
 
-VIDEO_PATH = os.path.join(BASE_DIR, CONFIG.get('video', {}).get('input_path', 'video/74.mp4'))
+# 影片選單：列出 video/ 資料夾中的影片，由使用者輸入編號選擇
+_VIDEO_DIR  = os.path.join(BASE_DIR, 'video')
+_VIDEO_EXTS = {'.mp4', '.avi', '.mov', '.mkv', '.MP4', '.AVI', '.MOV', '.MKV'}
+
+if os.path.isdir(_VIDEO_DIR):
+    _video_list = sorted(f for f in os.listdir(_VIDEO_DIR) if os.path.splitext(f)[1] in _VIDEO_EXTS)
+else:
+    _video_list = []
+
+if not _video_list:
+    print(">>> [影片選單] video/ 資料夾沒有影片，請直接輸入完整路徑")
+    _inp = input("影片路徑：").strip().strip('"')
+    VIDEO_PATH = _inp if os.path.isabs(_inp) else os.path.join(BASE_DIR, _inp)
+else:
+    print(">>> [影片選單] 請選擇要分析的影片：")
+    for _i, _v in enumerate(_video_list, 1):
+        print(f"    [{_i}] {_v}")
+    while True:
+        try:
+            _sel = int(input(">>> 輸入編號：").strip())
+            if 1 <= _sel <= len(_video_list):
+                VIDEO_PATH = os.path.join(_VIDEO_DIR, _video_list[_sel - 1])
+                break
+        except ValueError:
+            pass
+        print(f"    請輸入 1 ~ {len(_video_list)} 的數字")
 MODEL_DIR = os.path.join(BASE_DIR, 'model')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
@@ -100,9 +125,12 @@ def main():
     print("🚀 多模態 AI 互動行為分析系統 (狀態機盲追蹤 + 1-14無縫全通版)...")
     print("==================================================")
     print(f">>> [評分系統] Scoring Version: {SCORING_VERSION}")
+    print(f">>> [影片]    {VIDEO_PATH}")
 
     if not os.path.exists(VIDEO_PATH):
-        sys.exit(f"❌ 錯誤：找不到影片：{VIDEO_PATH}")
+        print(f"❌ 錯誤：找不到影片：{VIDEO_PATH}")
+        print(f"   請確認路徑正確，或在 config.yaml 中設定 video.input_path")
+        sys.exit(1)
 
     # --- 系統初始化 ---
     print("\n>>> [系統] 正在啟動聽覺模組與讀取時間軸...")
@@ -207,9 +235,15 @@ def main():
             if hasattr(scoring, 'stage_start_times'):
                 for s_idx in sorted(scoring.stage_start_times.keys()):
                     if current_time_sec >= scoring.stage_start_times[s_idx]:
-                        if s_idx > expected_stage: 
+                        if s_idx > expected_stage:
+                            # 🌟 修復：第 8 階段（怪聲代償）只能從第 7 階段跳入
+                            # 原因：scoring.stage_start_times[8] 的觸發時間由 Whisper 偵測的怪聲時間點決定，
+                            #       若在第 1 階段出現高頻聲被誤判，時間軸會直接從第 1 跳到第 8。
+                            #       加入此限制後，第 8 階段的時間軸推進必須等到 current_stage == 7。
+                            if s_idx == 8 and current_stage < 7:
+                                continue
                             expected_stage = s_idx
-                            
+
             if expected_stage > current_stage:
                 print(f"\n>>> [時間軸推進] {current_time_sec:.1f}s 系統強制推進至 第 {expected_stage} 階段")
                 scoring.handle_stage_change(current_stage, expected_stage, current_time_sec)

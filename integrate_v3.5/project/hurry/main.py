@@ -12,6 +12,9 @@ import yaml
 import torch  # 🌟 新增：用於 CUDA 狀態偵測與 VRAM 清理
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+# 🌟 壓制 MediaPipe/glog 遙測上傳失敗的噪音 log（Clearcut uploader，與程式邏輯無關）
+os.environ["GLOG_minloglevel"]      = "3"   # 0=INFO 1=WARNING 2=ERROR 3=FATAL；設 3 只顯示致命錯誤
+os.environ["TF_CPP_MIN_LOG_LEVEL"]  = "3"   # 同時壓制 TensorFlow 底層 log
 
 # ============================================================
 # ★ 批次精簡版：只量測第 6-10 階段
@@ -473,16 +476,20 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
 
             out.write(frame)
 
-            if SHOW_PREVIEW:
-                cv2.imshow(win_name, frame)
+            # 🌟 修正預覽卡頓：
+            #   1. 先 resize 到視窗尺寸再 imshow（減少顯示管線的資料量，從 1080p 降至 720p）
+            #   2. 每 2 幀才刷新一次預覽（output 影片仍逐幀寫入，評分不受影響）
+            #   3. waitKey 移入 SHOW_PREVIEW 區塊（關閉預覽時不做阻塞呼叫）
+            if SHOW_PREVIEW and frame_count % 2 == 0:
+                preview_frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_NEAREST)
+                cv2.imshow(win_name, preview_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    print(">>> [使用者] 按下 Q，中止當前影片處理")
+                    break
 
             if frame_count % 100 == 0:
                 gc.collect()
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                print(">>> [使用者] 按下 Q，中止當前影片處理")
-                break
 
     except Exception as e:
         print(f"\n❌ [{video_basename}] 崩潰: {e}")
@@ -584,9 +591,6 @@ def main():
         print("         請確認 NVIDIA 驅動與 torch+cuda 版本是否匹配")
 
     # 🌟 修改：切換工作目錄至原始專案根目錄
-    # 原因：config.yaml 內的 gaze 模型路徑都是相對路徑（如 model/gaze/nano.pt），
-    # 若從 C:\project\hurry\ 執行，相對路徑會指向錯誤位置。
-    # BASE_DIR/VIDEO_DIR/OUTPUT_DIR 都是絕對路徑，chdir 不影響它們。
     os.chdir(PROJECT_DIR)
     print(f">>> 工作目錄已設定為：{PROJECT_DIR}")
 
@@ -603,23 +607,7 @@ def main():
 
     gaze_config = CONFIG.get('gaze_estimation', {})
 
-    # --- 一次性初始化重型元件（跨影片共用） ---
-    print("\n>>> 初始化共用模型（只做一次）...")
-    model_manager = ModelManager(model_dir=MODEL_DIR)
-    pose_path     = os.path.join(MODEL_DIR, 'yolo11n-pose.pt')
-    interaction   = InteractionEngine(pose_model_path=pose_path, sma_window=5)
-    gaze_pipeline = GazeEstimationPipeline(config=gaze_config)
-
-    # 🌟 EasyOCR 只載入一次：SignboardTracker 在 main() 建立，
-    #    process_single_video 透過 sign_tracker.reset() 重置狀態，不重新載入模型
-    # ⚠️ 不能用 allowlist='67'（會把「1」強制讀成「7」），改用 '1234567' 自由辨識
-    print(">>> 載入 EasyOCR（僅一次）...")
-    sign_tracker = SignboardTracker(allowlist='1234567')
-    dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
-    sign_tracker.reader.readtext(dummy_img)   # 暖機，避免第一支影片第一幀延遲
-    print(">>> 共用模型初始化完成\n")
-
-    # --- 收集影片清單 ---
+    # --- 收集影片清單（提前到 GPU 模型載入之前）---
     if not os.path.isdir(VIDEO_DIR):
         sys.exit(f"❌ 找不到影片資料夾：{VIDEO_DIR}\n   請將影片放入 {VIDEO_DIR}")
 
@@ -637,6 +625,60 @@ def main():
     for f in video_files:
         print(f"    - {os.path.basename(f)}")
     print()
+
+    # ══════════════════════════════════════════════════════
+    # 🌟 Step 0：批次語音預處理（GPU 模型尚未載入，Whisper 可全速使用 GPU）
+    #
+    # 根本原因修正：原本每支影片進入 frame loop 前才跑 Whisper（CPU），
+    # 5 支影片 × large-v3 CPU 辨識 = 可能長達數小時等待。
+    # 改為：全部影片的語音辨識集中在此一次完成，
+    #   ① 此時 YOLO / Gaze / EasyOCR 尚未佔用 VRAM → Whisper 可用 GPU → 快 5-10x
+    #   ② 快取建立後，process_single_video 的 get_trigger_windows() 直接讀取 → 不再啟動子行程
+    #   ③ 重複執行時快取已存在，此段幾乎是零耗時
+    # ══════════════════════════════════════════════════════
+    print("=" * 60)
+    print("📢  Step 0：批次語音辨識（GPU Whisper，GPU 模型載入前執行）")
+    print("=" * 60)
+    _noise_path = NOISE_SAMPLE_PATH if os.path.exists(NOISE_SAMPLE_PATH) else None
+    for _vp in video_files:
+        _bn   = os.path.splitext(os.path.basename(_vp))[0]
+        _sdir = os.path.join(OUTPUT_DIR, f'_speech_{_bn}')
+        _cpath = os.path.join(_sdir, 'speech_cache.json')
+        if os.path.exists(_cpath):
+            print(f"    [{_bn}] ✅ 快取已存在，跳過 Whisper")
+        else:
+            print(f"    [{_bn}] 🔊 執行 Whisper 語音辨識...")
+            os.makedirs(_sdir, exist_ok=True)
+            try:
+                _sp = SpeechTrigger(
+                    video_path=_vp,
+                    output_dir=_sdir,
+                    keywords=SPEECH_KEYWORDS,
+                    noise_sample_path=_noise_path,
+                )
+                _sp.get_trigger_windows()
+                del _sp
+            except Exception as _sp_err:
+                # 🌟 語音辨識失敗時不中斷批次：frame loop 仍可執行，只是沒有觸發時間窗
+                print(f"    [{_bn}] ⚠️ 語音辨識失敗（{_sp_err}），frame loop 繼續但無語音觸發")
+            gc.collect()
+    print(">>> Step 0 完成：全部影片語音快取就緒\n")
+
+    # --- 一次性初始化重型 GPU 元件（語音預處理完成後才載入，避免 VRAM 衝突）---
+    print("=" * 60)
+    print("📢  Step 1：載入 GPU 視覺模型")
+    print("=" * 60)
+    model_manager = ModelManager(model_dir=MODEL_DIR)
+    pose_path     = os.path.join(MODEL_DIR, 'yolo11n-pose.pt')
+    interaction   = InteractionEngine(pose_model_path=pose_path, sma_window=5)
+    gaze_pipeline = GazeEstimationPipeline(config=gaze_config)
+
+    # 🌟 EasyOCR 只載入一次
+    print(">>> 載入 EasyOCR（僅一次）...")
+    sign_tracker = SignboardTracker(allowlist='1234567')
+    dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+    sign_tracker.reader.readtext(dummy_img)
+    print(">>> 共用模型初始化完成\n")
 
     # --- 批次處理 ---
     for i, video_path in enumerate(video_files, 1):
