@@ -32,14 +32,18 @@
 
 ```text
 project_AI/
-├── main.py                        # 總指揮官：主迴圈、時間軸控制、影片輸出
+├── main.py                        # 總指揮官：主迴圈、時間軸控制、影片輸出（Stage 1~14）
 ├── config.yaml                    # 系統配置檔（路徑、關鍵字、閾值）
 ├── ffmpeg.exe                     # FFmpeg 執行檔（音軌縫合用）
 │
+├── hurry/                         # 快速批次模式（Stage 6~10，多影片一次跑完）
+│   ├── main.py                    # 批次總控：先跑所有影片 Whisper，再批次跑視覺分析
+│   └── output/                    # 批次輸出（含各影片的 _speech_xxx/ 快取子目錄）
+│
 ├── modules/
 │   ├── speech.py                  # 語音觸發器（Subprocess 隔離執行）
-│   ├── speech_engine.py           # Whisper 語音辨識核心（抗幻覺過濾、繁簡容錯）
-│   ├── signboard.py               # EasyOCR 牌子追蹤器（1~8 階段切換狀態機）
+│   ├── speech_engine.py           # Whisper 語音辨識核心（抗幻覺過濾、繁簡容錯、音訊模板怪聲比對）
+│   ├── signboard.py               # EasyOCR 牌子追蹤器（1~8 階段切換狀態機、換牌位置凍結）
 │   ├── models_manager.py          # 動態 YOLO 模型管理員（Lazy Loading）
 │   ├── interaction.py             # 互動引擎（YOLO-Pose + MediaPipe Ray-Casting）
 │   ├── scoring_engine.py          # 計分引擎（時間窗事件解析）
@@ -56,6 +60,7 @@ project_AI/
 │       └── visualization.py           # 視線軌跡與頭部姿態立體渲染
 │
 ├── model/                         # AI 模型權重（不上傳 Git，見下方說明）
+│   ├── noise.wav                  # ⭐ 手機怪聲參考樣本（Stage 8 音訊模板，1~3 秒）
 │   ├── front_model.pt             # YOLO：前方物件
 │   ├── background_model.pt        # YOLO：背景物件
 │   ├── balloon_model.pt           # YOLO：氣球
@@ -88,7 +93,9 @@ project_AI/
 - 以 **Subprocess 獨立行程隔離**執行，防止 VRAM 崩潰
 - 快取機制（`speech_cache.json`），第二次執行跳過辨識階段（< 0.1s）
 - 支援繁簡體字容錯（「畫」/「画」、「這裡」/「这里」等）
-- RMS / 頻譜特徵偵測怪聲口令，觸發 Voice Override 代償跳階
+- **Stage 8 怪聲偵測採雙軌架構**：優先使用 `model/noise.wav` 音訊模板（頻譜相似度 ≥ 0.65）；找不到音檔時退回 RMS / 頻譜特徵 fallback 模式
+- Stage 8 時間軸起點由 **音訊 noise_events 全權決定**，已移除 Whisper 文字 fallback（防止 initial_prompt 幻覺中的「短促的聲音」誤觸發）
+- `scoring_engine` 內建防早跳保護：Stage 8 只能從 Stage 7 推進，杜絕 Stage 1 直跳
 
 ### 牌子追蹤器 (`signboard.py`)
 - **EasyOCR** 辨識 1~8 數字牌，驅動評估階段狀態機；每 2 幀執行一次 OCR 降低運算負擔
@@ -96,6 +103,7 @@ project_AI/
 - **Seven-Hunt Mode**（Stage 6 專屬）：當 `current_stage == 6` 且 7 軌仍未找到「7」時，以 `allowlist='7'` 強制 EasyOCR 只輸出「7」，並以 3x 放大圖（CLAHE / Otsu / Inverted 三變體）補強辨識——根治帶橫槓歐式「7」被誤讀為「1」的問題
 - 動態追蹤結界 (TRACKING_PAD = 180px)，防止跟丟；Backup 全 ROI 掃描只做位置再錨，不影響升階邏輯
 - 防抖投票機制（history deque + 升階保護），有效隔絕背景誤觸發
+- **換牌位置凍結 (`_occlusion_freeze`)**：偵測到手部遮擋牌子（膚色像素比 > 閾值）時，KCF 追蹤器繼續內部運行但結果不寫入，掃描框釘在原位；手退走後 OCR 在原位找到新牌即自動解凍——根治換牌期間追蹤器跟手漂移導致後續辨識全錯的問題
 
 ### 動態模型管理員 (`models_manager.py`)
 - 依評估階段自動切換 7 種 YOLO 模型
@@ -169,16 +177,45 @@ pip install ultralytics mediapipe openai-whisper easyocr opencv-python scipy num
 - `epoch_24_ckpt.pth.tar`（~88MB）請從 **Releases** 頁面下載，**勿解壓**，直接放入 `model/gaze/`
 - `face_model_ethxgaze.txt` 請以 **Raw 下載**取得純文字座標檔（約 1KB）
 
-### 5. 執行系統
+### 5. 放置怪聲參考音檔
+
+> Stage 8（手機怪聲）採音訊模板比對，需提供一段 1~3 秒的手機警報聲樣本。
+
+將任意格式（`.wav` / `.mp3` 等）的怪聲音檔命名為 `noise.wav`，放入：
+
+```
+model/noise.wav
+```
+
+缺少此檔案時，系統會自動退回純頻譜特徵偵測模式（準確率較低，且 Whisper 初始提示幻覺可能導致 Stage 8 誤觸發）。
+
+> ⚠️ 若先前曾在沒有 `noise.wav` 的狀態下執行過，請刪除舊快取再重跑：
+> - hurry 模式：`hurry/output/_speech_{影片名}/speech_cache.json`
+> - main 模式：`output/speech_cache.json`
+
+### 6. 執行系統
+
+**單影片全階段分析（Stage 1~14）：**
 
 ```bash
 python main.py
 ```
 
-**互動說明：**
+- 啟動後顯示 `video/` 目錄影片選單，輸入編號選擇影片
 - 語音大腦首次執行會辨識音訊（結果快取後，下次 < 0.1s 跳過）
 - 預覽視窗彈出後，請框選牌子可能出現的大範圍 ROI，按 **Enter** 確認
 - 執行中按 **`q`** 安全結束並導出影片；按 **`r`** 手動重置階段為 0
+
+**批次快速模式（Stage 6~10，多影片）：**
+
+```bash
+python hurry/main.py
+```
+
+- 自動掃描 `video/` 下所有影片
+- **Step 0**：所有影片 Whisper 語音辨識先跑完（此時 VRAM 空著，GPU 全力辨識）
+- **Step 1**：載入 YOLO / Gaze / EasyOCR 視覺模型，逐支批次分析
+- 重複執行時快取命中，Whisper 步驟幾乎零耗時
 
 ---
 
