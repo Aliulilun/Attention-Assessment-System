@@ -880,7 +880,7 @@ def is_music_context_record(record: Dict[str, Any]) -> bool:
     if any(keyword in normalized_text for keyword in MUSIC_CONTEXT_KEYWORDS):
         return True
 
-    if re.search(r"([一-鿿])\1{2,}", normalized_text):
+    if re.search(r"([\u4e00-\u9fff])\1{2,}", normalized_text):
         return True
 
     return False
