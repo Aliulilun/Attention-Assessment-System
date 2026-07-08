@@ -100,6 +100,11 @@ class SignboardTracker:
               f"({self.roi_x},{self.roi_y}) -> "
               f"({self.roi_x + self.roi_w},{self.roi_y + self.roi_h})")
 
+    def force_stage(self, stage):
+        """🌟 強制設定當前階段（聽覺代償跳階時由 main.py 呼叫，同步 tracker 內部狀態）"""
+        self.current_stage = stage
+        self.history_results.clear()   # 清空升階投票，避免殘留舊數字干擾後續偵測
+
     def reset(self):
         """🌟 批次模式：重置所有影片狀態，保留 EasyOCR reader / 模板等重型元件"""
         self.current_stage     = 0

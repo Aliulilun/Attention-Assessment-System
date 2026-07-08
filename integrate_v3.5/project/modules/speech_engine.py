@@ -980,6 +980,12 @@ def select_alarm_noise_events(
         )
         return []
 
+    # 🌟 修改：若有提供 noise_sample_path（noise.wav），
+    #          只用模板相似度比對，禁用 RMS/頻譜 score 的 fallback 機制。
+    #          模板比對未達門檻 → 不觸發怪聲，直接回傳空串列。
+    if config.noise_sample_path is not None:
+        return []
+
     if eligible_events:
         best_event = max(
             eligible_events,

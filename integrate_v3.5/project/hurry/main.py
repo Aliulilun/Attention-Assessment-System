@@ -170,10 +170,22 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
         return
 
     fps     = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30.0
+        print(f"⚠️ [{video_basename}] FPS 讀取失敗，使用預設 30fps")
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+    # 🌟 新增：影片尺寸為 0 代表 VideoCapture 雖成功開啟但無有效幀，提前離開
+    if frame_w <= 0 or frame_h <= 0:
+        print(f"❌ [{video_basename}] 影片尺寸無效 ({frame_w}×{frame_h})，跳過")
+        cap.release()
+        return
+
     out = cv2.VideoWriter(temp_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_w, frame_h))
+    # 🌟 新增：VideoWriter 初始化失敗偵測（codec 不支援、路徑錯誤等情況下靜默失敗）
+    if not out.isOpened():
+        print(f"⚠️ [{video_basename}] VideoWriter 開啟失敗，輸出影片將空白（繼續評分）")
 
     success, first_frame = cap.read()
     if success:
@@ -331,7 +343,14 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             #    原因：yolo_boxes 快取非空時 analyze_interaction 仍每幀執行 YOLO-Pose+MediaPipe
             _t0 = _time.perf_counter()
             if len(yolo_boxes) > 0 and frame_count % YOLO_SKIP == 0:
-                child_is_pointing_hit = interaction.analyze_interaction(frame, yolo_boxes)
+                try:
+                    # 🌟 新增：傳入影片內部精確時間（ms），搭配 _ts_base 確保跨影片 timestamp 單調遞增
+                    _elapsed_ms = int(current_time_sec * 1000)
+                    child_is_pointing_hit = interaction.analyze_interaction(frame, yolo_boxes, elapsed_ms=_elapsed_ms)
+                except Exception as _ia_err:
+                    # MediaPipe 或 YOLO-Pose 臨時故障不中斷整影片，只印警告
+                    if frame_count % 100 == 0:
+                        print(f"⚠️ analyze_interaction 跳過 (Frame {frame_count}): {_ia_err}")
             _t_interaction += _time.perf_counter() - _t0  # 計時：Interaction 段結束
 
             # ──────────────────────────────────────────────
@@ -433,7 +452,12 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             _t_gaze += _time.perf_counter() - _t0  # 計時：Gaze 段結束
 
             # 時序狀態機更新
-            fsm_target = fsm.update(face_result_for_fsm, pose_result_for_fsm)
+            try:
+                fsm_target = fsm.update(face_result_for_fsm, pose_result_for_fsm)
+            except Exception as _fsm_err:
+                if frame_count % 100 == 0:
+                    print(f"⚠️ fsm.update 跳過 (Frame {frame_count}): {_fsm_err}")
+                fsm_target = None
 
             # 極端轉頭代償（EXTREME_TURNING）
             if fsm.current_state == "EXTREME_TURNING":
@@ -455,20 +479,24 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     gaze_result['gaze_angles_deg'][1],
                 )
 
-            scoring.update_frame(
-                time_sec=current_time_sec,
-                current_stage=current_stage,
-                is_in_trigger_window=is_in_trigger_window,
-                child_is_pointing_hit=child_is_pointing_hit,
-                child_is_gazing_at=child_is_gazing_at,
-                child_is_gazing_at_tester=child_is_gazing_at_tester,
-                gaze_result=gaze_result,
-                robot_rays=[],
-                robot_boxes=robot_boxes,
-                yolo_boxes=yolo_boxes,
-                is_gazing_at_box_func=is_gazing_at_box,
-                tester_gaze_angles=tester_gaze_angles,
-            )
+            try:
+                scoring.update_frame(
+                    time_sec=current_time_sec,
+                    current_stage=current_stage,
+                    is_in_trigger_window=is_in_trigger_window,
+                    child_is_pointing_hit=child_is_pointing_hit,
+                    child_is_gazing_at=child_is_gazing_at,
+                    child_is_gazing_at_tester=child_is_gazing_at_tester,
+                    gaze_result=gaze_result,
+                    robot_rays=[],
+                    robot_boxes=robot_boxes,
+                    yolo_boxes=yolo_boxes,
+                    is_gazing_at_box_func=is_gazing_at_box,
+                    tester_gaze_angles=tester_gaze_angles,
+                )
+            except Exception as _sc_err:
+                if frame_count % 100 == 0:
+                    print(f"⚠️ scoring.update_frame 跳過 (Frame {frame_count}): {_sc_err}")
 
             # ──────────────────────────────────────────────
             # 5. UI 資訊面板
@@ -518,7 +546,11 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             _t_other += _elapsed_frame - (_t_ocr - _prev_ocr) - (_t_yolo - _prev_yolo) \
                         - (_t_interaction - _prev_interact) - (_t_gaze - _prev_gaze)
 
-            out.write(frame)
+            try:
+                out.write(frame)
+            except Exception as _wr_err:
+                if frame_count % 100 == 0:
+                    print(f"⚠️ out.write 失敗 (Frame {frame_count}): {_wr_err}")
 
             # 🌟 計時報表：每 TIMING_REPORT_INTERVAL 幀印一次各段平均耗時
             if frame_count % TIMING_REPORT_INTERVAL == 0 and frame_count > 0:
@@ -556,7 +588,12 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
 
     finally:
         print(f"\n>>> 匯出事件紀錄 → {out_txt_path}")
-        scoring.write_report(out_txt_path)
+        # 🌟 新增：write_report 若拋出例外，會從 finally 傳出並覆蓋原本的 crash 訊息
+        try:
+            scoring.write_report(out_txt_path)
+        except Exception as _wr_err:
+            print(f"⚠️ write_report 失敗：{_wr_err}")
+            traceback.print_exc()
 
         # 🌟 新增：把 Whisper 語音辨識逐字稿追加到 txt 尾端
         try:
@@ -585,15 +622,29 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
         except Exception as _e:
             print(f"⚠️  逐字稿追加失敗：{_e}")
 
-        cap.release()
-        if 'out' in locals() and out is not None:
-            out.release()
+        # 🌟 修正：用 try/except 包裹每個釋放操作，避免崩潰後 handle 失效導致 WinError 6
+        #    拋出的例外若不攔截會從 finally 傳出 → 被 main() 誤判為頂層錯誤
+        try:
+            cap.release()
+        except Exception:
+            pass
+        try:
+            if 'out' in locals() and out is not None:
+                out.release()
+        except Exception:
+            pass
         if SHOW_PREVIEW:
-            cv2.destroyAllWindows()
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
         # 🌟 釋放本影片幀迴圈中累積的臨時 GPU 張量（YOLO result / Gaze 中間結果）
         gc.collect()
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
 
         # ── 音軌縫合 ──────────────────────────────────────
         print(">>> 縫合音軌 (FFmpeg)...")
@@ -734,8 +785,13 @@ def main():
     # 🌟 EasyOCR 只載入一次
     print(">>> 載入 EasyOCR（僅一次）...")
     sign_tracker = SignboardTracker(allowlist='1234567')
-    dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
-    sign_tracker.reader.readtext(dummy_img)
+    # 🌟 新增：暖機失敗不應中斷批次（第一幀 OCR 可能慢但不崩潰）
+    try:
+        dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+        sign_tracker.reader.readtext(dummy_img)
+        print(">>> EasyOCR 暖機完成")
+    except Exception as _ocr_warm_err:
+        print(f"⚠️ EasyOCR 暖機失敗（{_ocr_warm_err}），繼續執行（第一幀 OCR 可能較慢）")
     # 🌟 修改：覆寫 OCR 跳幀間隔（預設 2 幀 → 15 幀）
     #          牌子靜止展示數秒，每 0.5s 偵測一次已足夠；
     #          降低 EasyOCR 呼叫頻率是最有效的效能改善手段。

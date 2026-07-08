@@ -69,6 +69,7 @@ class InteractionEngine:
         )
         self.mp_hands = vision.HandLandmarker.create_from_options(options)
         self.timestamp_ms: int = 0
+        self._ts_base: int = 0  # 🌟 新增：批次模式跨影片 elapsed_ms 基準偏移
 
         self.C_CHILD: Tuple[int, int, int] = (0, 255, 0)
         self.C_TESTER: Tuple[int, int, int] = (0, 165, 255)
@@ -310,7 +311,12 @@ class InteractionEngine:
 
     def reset_tracking(self):
         """🌟 批次模式：重置所有影片間狀態（保留 YOLO / MediaPipe 模型）"""
-        self.timestamp_ms = 0
+        # 🌟 修正：不歸零，改為加大偏移（10,000 秒）
+        #    MediaPipe VIDEO 模式要求 timestamp 單調遞增；若歸零而 mp_hands 物件不變，
+        #    下一支影片的第一個 timestamp（33ms）< 上一支影片末尾 → 拋出 monotonic 錯誤。
+        #    加 10,000,000ms 的跳躍確保跨影片永遠遞增，遠超任何影片實際長度。
+        self.timestamp_ms += 10_000_000
+        self._ts_base = self.timestamp_ms  # 🌟 新增：記錄此影片的 timestamp 起點，供 elapsed_ms 模式使用
         self.dwell_counters = {"Child": 0, "Tester": 0}
         self.hold_counters  = {"Child": 0, "Tester": 0}
         self.ray_history = {
@@ -397,7 +403,9 @@ class InteractionEngine:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
         if elapsed_ms is not None:
-            self.timestamp_ms = elapsed_ms
+            # 🌟 修正：elapsed_ms 為當前影片內部時間（從 0 起算），
+            #          加上 _ts_base 確保跨影片 timestamp 單調遞增
+            self.timestamp_ms = self._ts_base + elapsed_ms
         else:
             self.timestamp_ms += 33
 
