@@ -17,7 +17,9 @@
 │   └── toy_train/
 ├── code/           # 優化 / 重構的程式（全部上傳）
 │   ├── scoring_system/     # 評分系統
-│   └── signboard_system/   # stage牌辨識 (初版)
+│   ├── signboard_system/   # stage牌辨識 (初版)
+│   ├── 0708debug           # 聲音辨識與小bug修正
+│   └── stage_scoring       # JA判斷系統，內附有測試腳本(把文字檔放入output後執行)
 ├── model_test/     # 本機模型測試用（影片、輸出結果等），不納入版控
 ├── .gitignore
 └── README.md
