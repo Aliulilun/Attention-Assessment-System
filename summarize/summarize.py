@@ -6,16 +6,23 @@ import pandas as pd
 
 def parse_gaze_log(file_path):
     """
-    解析單一 txt 檔案的視線追蹤紀錄，運用 NFA 狀態匹配擷取特徵。
+    解析單一 txt 檔案的視線追蹤紀錄，並針對相同時間戳的 TB/TH/T0 進行次級事件回溯。
     傳入的 file_path 為 pathlib.Path 物件。
     """
     vid = file_path.stem
     text = file_path.read_text(encoding='utf-8')
         
+    # 如果文本內含有更精確的路徑資訊，則透過 Regex 校正編號
     vid_match = re.search(r'Video:.*[/\\](\d+)\.mp4', text)
     if vid_match:
         vid = vid_match.group(1)
 
+    # 將文本分割為 Summary 與 Full Event Log 兩部分
+    parts = text.split('=== Full Event Log ===')
+    summary_text = parts[0]
+    event_log_text = parts[1] if len(parts) > 1 else ""
+
+    # 定義目標特徵的 Schema
     stages_schema = {
         6:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數'],
         7:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數'],
@@ -30,8 +37,9 @@ def parse_gaze_log(file_path):
         t0, tb, th = 'x', 'x', 'x'
         pt_cnt, tb_cnt, th_cnt = 0, 0, 0
         
+        # 1. 於 Summary 區塊進行初次特徵擷取
         block_pattern = rf"Stage\s+{stage}\s+--.*?(?=Stage\s+\d+\s+--|={40}|$)"
-        match = re.search(block_pattern, text, re.DOTALL)
+        match = re.search(block_pattern, summary_text, re.DOTALL)
         
         if match:
             block = match.group(0)
@@ -64,7 +72,36 @@ def parse_gaze_log(file_path):
                 if 'not detected' not in val.lower() and '--' not in val:
                     cnt_m = re.search(r'x(\d+)', val)
                     if cnt_m: pt_cnt = int(cnt_m.group(1))
+
+        # ========================================================
+        # 2. 次級特徵回溯邏輯 (Fallback Mechanism for Temporal Collision)
+        # ========================================================
+        # 定義搜尋 Event Log 中該 Stage 區間的正則表達式
+        stage_log_pattern = rf"Stage change -> {stage}\b(.*?)(?=Stage change ->|$)"
         
+        if stage in [6, 7, 9]:
+            # 若 TB 與 TH 發生碰撞
+            if tb != 'x' and th != 'x' and tb == th:
+                stage_log_match = re.search(stage_log_pattern, event_log_text, re.DOTALL)
+                if stage_log_match:
+                    stage_log = stage_log_match.group(1)
+                    # 於該區間內搜尋 TH#2 的時間戳，例如: [220.9s] TH#2:
+                    th2_m = re.search(r'\[\s*([\d\.]+)s\s*\]\s*TH#2\b', stage_log)
+                    if th2_m:
+                        th = th2_m.group(1) + 's' # 覆寫 TH 為第二次紀錄
+                        
+        elif stage in [8, 10]:
+            # 若 T0 與 TH 發生碰撞
+            if t0 != 'x' and th != 'x' and t0 == th:
+                stage_log_match = re.search(stage_log_pattern, event_log_text, re.DOTALL)
+                if stage_log_match:
+                    stage_log = stage_log_match.group(1)
+                    # 於該區間內搜尋 TH#2 的時間戳
+                    th2_m = re.search(r'\[\s*([\d\.]+)s\s*\]\s*TH#2\b', stage_log)
+                    if th2_m:
+                        th = th2_m.group(1) + 's' # 覆寫 TH 為第二次紀錄
+
+        # 3. 將最終解析結果 Mapping 至輸出資料集
         if stage in [6, 7, 9]:
             row_data[f'Stage{stage}_T0'] = t0
             row_data[f'Stage{stage}_TB'] = tb
@@ -72,7 +109,7 @@ def parse_gaze_log(file_path):
             row_data[f'Stage{stage}_Pointing次數'] = pt_cnt
             row_data[f'Stage{stage}_TB次數'] = tb_cnt
             row_data[f'Stage{stage}_TH次數'] = th_cnt
-        else: 
+        else: # Stage 8, 10
             row_data[f'Stage{stage}_T0'] = t0
             row_data[f'Stage{stage}_TH'] = th
             row_data[f'Stage{stage}_TH次數'] = th_cnt
@@ -80,14 +117,14 @@ def parse_gaze_log(file_path):
     return row_data
 
 def main():
-    parser = argparse.ArgumentParser(description="批次處理 Gaze Tracking 的所有 txt 檔案")
+    parser = argparse.ArgumentParser(description="批次處理 Gaze Tracking 的所有 txt 檔案，並處理時間碰撞問題")
     parser.add_argument('-d', '--dir', type=str, default=None, help="指定包含 txt 檔案的資料夾路徑")
     args = parser.parse_args()
 
     if args.dir:
         target_path_str = args.dir
     else:
-        print("請輸入包含 txt 檔案的資料夾路徑:")
+        print("請輸入包含 txt 檔案的資料夾路徑 (直接按下 Enter 為當前目錄):")
         target_path_str = input("路徑: ").strip()
         if not target_path_str:
             target_path_str = "./"
@@ -115,17 +152,10 @@ def main():
         except Exception as e:
             print(f"  - 解析失敗: {f_path.name}, 錯誤訊息: {e}")
             
-    # 構建 DataFrame
     df = pd.DataFrame(all_rows)
     
-    # ---------------------------------------------------------
-    # 【資料排序邏輯】(Sorting Algorithm Implementation)
-    # 利用正則表達式提取「影片編號」字串中的純數字部分，
-    # 並強制轉型為浮點數或整數 (此處使用 int) 作為 sort_values 的 key。
-    # 這樣 '100' 就會正確排在 '42' 之後，而不會因為字串首字比較導致 '100' 在前。
-    # ---------------------------------------------------------
+    # 強制將字串提取為數字並進行數值排序 (Numeric Sorting)
     def extract_numeric_key(series):
-        # 將無法提取出數字的極端情況給予無窮大 (inf)，排在最後面
         return series.apply(
             lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else float('inf')
         )
