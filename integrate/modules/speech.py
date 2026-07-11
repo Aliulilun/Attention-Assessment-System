@@ -101,7 +101,7 @@ class SpeechTrigger:
                 "--noise-sample",
                 self.noise_sample_path,
                 "--noise-template-threshold",
-                "0.85",
+                "0.70",
             ])
             print(f">>> [SpeechTrigger] 使用怪聲範本：{self.noise_sample_path}")
 

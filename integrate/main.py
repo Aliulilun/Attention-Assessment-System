@@ -80,7 +80,44 @@ try:
 except FileNotFoundError:
     CONFIG = {}
 
-VIDEO_PATH = os.path.join(BASE_DIR, CONFIG.get('video', {}).get('input_path', 'video/106.mp4'))
+_default_video = CONFIG.get('video', {}).get('input_path', 'video/61.mp4')
+VIDEO_DIR = os.path.join(BASE_DIR, 'video')
+
+def _resolve_video_input(video_input):
+    """將使用者輸入的影片編號轉成完整路徑；空輸入回傳 None。"""
+    if not video_input:
+        return None
+    video_filename = video_input if video_input.lower().endswith('.mp4') else f'{video_input}.mp4'
+    return os.path.join(VIDEO_DIR, video_filename)
+
+def _auto_pick_video():
+    """兩次輸入都失敗時的保底選擇：優先用設定檔預設影片，否則挑 video/ 底下第一支 mp4。"""
+    default_path = os.path.join(BASE_DIR, _default_video)
+    if os.path.exists(default_path):
+        return default_path
+    if os.path.isdir(VIDEO_DIR):
+        for name in sorted(os.listdir(VIDEO_DIR)):
+            if name.lower().endswith('.mp4'):
+                return os.path.join(VIDEO_DIR, name)
+    return default_path
+
+VIDEO_PATH = None
+for _attempt in range(2):
+    _video_input = input(f">>> 請輸入要分析的影片編號（直接按 Enter 使用預設 {_default_video}）：").strip()
+    _candidate = _resolve_video_input(_video_input)
+    if _candidate is None:
+        print(">>> 未輸入影片編號。")
+    elif os.path.exists(_candidate):
+        VIDEO_PATH = _candidate
+        break
+    else:
+        print(f">>> 找不到影片：{_candidate}")
+    if _attempt == 0:
+        print(">>> 請再輸入一次：")
+
+if VIDEO_PATH is None:
+    VIDEO_PATH = _auto_pick_video()
+    print(f">>> 兩次輸入皆失敗，已自動選擇影片：{VIDEO_PATH}")
 MODEL_DIR = os.path.join(BASE_DIR, 'model')
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
 
@@ -115,8 +152,7 @@ def main():
         video_path=VIDEO_PATH,
         output_dir=OUTPUT_DIR,
         keywords=["開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉", "機器人", "放煙火", "煙火", "放烟火", "烟火", "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"],
-        # 🌟 修改：路徑改為 model/noise.wav（原 model/noisesample/noise.wav 不存在）
-        noise_sample_path=os.path.join(MODEL_DIR, 'noise.wav')
+        noise_sample_path=os.path.join(MODEL_DIR, 'noisesample', 'noise.wav')
     )
     trigger_windows = speech.get_trigger_windows()
     
@@ -136,9 +172,7 @@ def main():
     # 模型大腦：負責自動切換各階段的各式模型
     model_manager = ModelManager(model_dir=MODEL_DIR)
     pose_path = os.path.join(MODEL_DIR, 'yolo11n-pose.pt')
-    # 🌟 修改：明確傳入 hand_model_path，避免 Windows junction/symlink 下 __file__
-    #          解析到真實路徑（C:\Users\wayne\Desktop\project\project_v3）找不到模型
-    hand_path = os.path.join(MODEL_DIR, 'hand_landmarker.task')
+    hand_path = os.path.join(MODEL_DIR, 'gaze', 'hand_landmarker.task')
     interaction = InteractionEngine(pose_model_path=pose_path, hand_model_path=hand_path, sma_window=5)
 
     print(">>> [系統] 正在啟動視線估計模組與時序狀態機...")
@@ -153,11 +187,15 @@ def main():
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
+
     out = cv2.VideoWriter(TEMP_VIDEO_PATH, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_w, frame_h))
 
     success, first_frame = cap.read()
-    if success: sign_tracker.initialize_roi(first_frame)
+    if success:
+        if os.environ.get('BATCH_AUTO_ROI') == '1':
+            sign_tracker.initialize_roi_auto(first_frame)
+        else:
+            sign_tracker.initialize_roi(first_frame)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     cv2.namedWindow("Multi-Modal AI System Preview", cv2.WINDOW_NORMAL)
@@ -300,8 +338,8 @@ def main():
                     for box in yolo_boxes:
                         bx1, by1, bx2, by2 = map(int, box)
                         cv2.rectangle(frame, (bx1, by1), (bx2, by2), box_color, box_thick)
-                        if current_stage == 9:
-                            label = "Tablet (Stage 9)"
+                        if current_stage in [9, 10]:
+                            label = f"Tablet (Stage {current_stage})"
                         elif is_locked_box:
                             label = f"LOCKED (Stage {current_stage})"
                         else:

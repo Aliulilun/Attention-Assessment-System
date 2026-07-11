@@ -15,6 +15,7 @@ class ModelManager:
         # ==========================================
         self.use_cuda = torch.cuda.is_available()
         if self.use_cuda:
+            torch.backends.cudnn.benchmark = True
             print(f">>> [ModelManager] 偵測到 GPU：{torch.cuda.get_device_name(0)}，啟用 CUDA 加速！")
         else:
             print(">>> [ModelManager] ⚠️ 沒有偵測到 CUDA，將使用 CPU 進行推論，速度會較慢。")
@@ -31,6 +32,7 @@ class ModelManager:
             6: "doll_model.pt",
             7: "toy_model.pt",
             9: "tablet_model.pt",
+            10: "tablet_model.pt",      # ✅ 新增：第 10 階段 TB 判定用（看向平板）
             11: "front_model.pt",       # ✅ 新增：第 11~12 階段 (前方物品)
             12: "front_model.pt",
             13: "background_model.pt",  # ✅ 新增：第 13~14 階段 (背景物品)

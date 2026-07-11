@@ -2,6 +2,8 @@ import json
 import os
 import numpy as np
 
+from modules.stage_scoring import format_stage_score_suffix
+
 # ==========================================
 # 冷卻時間常數（防 YOLO 掉偵測導致重複計次）
 # ==========================================
@@ -126,7 +128,7 @@ STAGE_NAMES = {
     4: "真人指遠物(Pointing - Far)",
     5: "神奇氣球(Magical Balloon)",
     6: "看偶寫字 (Puppet Writing)",
-    7: "開筱驚喜袋(Mystery Bag)",
+    7: "開箱驚喜袋(Mystery Bag)",
     8: "手機怪聲(Strange Sound)",
     9: "機器人畫畫(Robot Drawing)",
     10: "機器人煙火秀(Social Referencing)",
@@ -328,7 +330,7 @@ class ScoringEngine:
                 if not already_active:
                     new_record = create_trigger_record(
                         self.stage_names.get(10, "Stage10"), 10,
-                        event["start"], event["start"] + 8.0, None, "robot_box"
+                        event["start"], event["start"] + 10.0, "object", "robot_box"
                     )
 
             elif 11 <= current_stage <= 14 and abs(event["start"] - self.stage_start_times.get(current_stage, -1)) < 0.05:
@@ -516,7 +518,7 @@ class ScoringEngine:
             ordered_records = sorted(self.trigger_event_records, key=lambda r: r.get("t0", 0.0))
             for idx, r in enumerate(ordered_records, 1):
                 t0 = r["t0"]
-                f.write("\n" + str(idx).zfill(2) + ". Stage " + str(r["stage"]) + " -- " + r["label"] + "\n")
+                f.write("\n" + str(idx).zfill(2) + ". Stage " + str(r["stage"]) + " -- " + r["label"] + format_stage_score_suffix(r) + "\n")
                 f.write("    T0       = " + str(round(t0, 2)) + "s\n")
                 if r.get("pointing_t") is not None:
                     delay = r["pointing_t"] - t0
