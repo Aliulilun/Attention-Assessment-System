@@ -1,0 +1,169 @@
+=== Result Summary ===
+Video: C:\Users\wayne\Desktop\project\integrate_v4\video\44.mp4
+----------------------------------------
+Total Score: 2
+Total Gazing Events: 5
+========================================
+=== T0 / Pointing / TB / TH Detail ===
+  First-occurrence = timestamp; Count = total (incl. first)
+  Cooldowns: TB/TH=1.5s, Pointing=0.8s
+========================================
+
+01. Stage 8 -- 手機怪聲(Strange Sound)
+    T0       = 134.75s
+    Pointing = not detected
+    TB       = -- (no TB condition)
+    TH       = 135.12s  (+0.37s from T0) x3
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+02. Stage 9 -- 機器人畫畫(Robot Drawing)
+    T0       = 236.86s
+    Pointing = not detected
+    TB       = 242.97s  (+6.11s from T0) x8
+    TH       = 244.04s  (+7.18s from T0 / +1.07s from TB) x2
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+03. Stage 10 -- 機器人煙火秀(Social Referencing)
+    T0       = 271.72s
+    Pointing = not detected
+    TB       = -- (no TB condition)
+    TH       = 279.56s  (+7.84s from T0) x1
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+========================================
+=== Stage Gazing Stats ===
+Stage 9 [機器人畫畫(Robot Drawing)]: scored, GazingCount=4
+Stage 10 [機器人煙火秀(Social Referencing)]: scored, GazingCount=1
+----------------------------------------
+=== Full Event Log ===
+[SYSTEM] Scoring Version: HURRY_6to10_BATCH_V1
+[16.8s] Gaze@Tester P=8.8 Y=30.9
+[134.8s] Stage change -> 8
+[134.8s] T0(noise): 手機怪聲(Strange Sound)
+[135.1s] TH#1: 手機怪聲(Strange Sound) +0.37s
+[135.12s] Gaze@Tester P=2.1 Y=17.1
+[135.32s] Gaze@Tester P=0.7 Y=12.7
+[135.45s] Gaze@Tester P=0.6 Y=10.9
+[135.72s] Gaze@Tester P=2.1 Y=11.8
+[136.6s] TH#2: 手機怪聲(Strange Sound)
+[136.65s] Gaze@Tester P=10.2 Y=36.5
+[136.85s] Gaze@Tester P=0.9 Y=40.4
+[137.32s] Gaze@Tester P=3.6 Y=31.2
+[137.65s] Gaze@Tester P=0.2 Y=47.6
+[137.92s] Gaze@Tester P=0.0 Y=42.6
+[138.05s] Gaze@Tester P=0.5 Y=37.8
+[143.2s] TH#3: 手機怪聲(Strange Sound)
+[143.25s] Gaze@Tester P=0.4 Y=20.6
+[234.3s] Gaze@Tester P=-2.7 Y=15.3
+[234.44s] Gaze@Tester P=5.3 Y=10.5
+[234.7s] Gaze@Tester P=11.0 Y=16.9
+[236.9s] Stage change -> 9
+[236.9s] T0: 機器人畫畫(Robot Drawing)
+[238.44s] Gaze@Tester P=1.5 Y=19.4
+[238.84s] Gaze@Tester P=0.8 Y=5.8
+[239.1s] Gaze@Tester P=-0.1 Y=10.1
+[243.0s] TB#1: 機器人畫畫(Robot Drawing) RT=6.11s
+[244.0s] TH#1: 機器人畫畫(Robot Drawing) +7.18s
+[246.4s] TB#2: 機器人畫畫(Robot Drawing)
+[248.2s] TB#3: 機器人畫畫(Robot Drawing)
+[248.2s] Gaze hit Stage 9
+[248.6s] Gaze hit Stage 9
+[248.8s] Gaze hit Stage 9
+[248.9s] Gaze hit Stage 9
+[255.6s] TB#4: 機器人畫畫(Robot Drawing)
+[257.3s] TB#5: 機器人畫畫(Robot Drawing)
+[260.6s] TB#6: 機器人畫畫(Robot Drawing)
+[263.2s] TB#7: 機器人畫畫(Robot Drawing)
+[263.2s] Gaze hit Stage 9
+[263.4s] Gaze hit Stage 9
+[263.6s] Gaze hit Stage 9
+[263.8s] Gaze hit Stage 9
+[263.9s] Gaze hit Stage 9
+[264.2s] Gaze hit Stage 9
+[264.4s] TH#2: 機器人畫畫(Robot Drawing)
+[264.37s] Gaze@Tester P=1.7 Y=11.5
+[265.0s] TB#8: 機器人畫畫(Robot Drawing)
+[265.0s] Gaze hit Stage 9
+[265.37s] Gaze@Tester P=-1.3 Y=4.2
+[265.57s] Gaze@Tester P=-1.5 Y=2.6
+[267.4s] Gazing Stage 9 Score=1 Added=YES
+[267.4s] Gaze hit Stage 9
+[267.8s] Gazing Stage 9 Score=1 Added=NO
+[267.8s] Gaze hit Stage 9
+[269.0s] Gazing Stage 9 Score=1 Added=NO
+[269.0s] Gaze hit Stage 9
+[271.0s] Gazing Stage 9 Score=1 Added=NO
+[271.7s] Stage change -> 10
+[271.7s] T0: 機器人煙火秀(Social Referencing)
+[271.7s] Gazing Stage 10 Score=2 Added=YES
+[271.7s] Gaze hit Stage 10
+[279.6s] TH#1: 機器人煙火秀(Social Referencing) +7.84s
+[289.16s] Gaze@Tester P=-0.8 Y=13.4
+[289.3s] Gaze@Tester P=-0.5 Y=14.4
+[289.5s] Gaze@Tester P=5.6 Y=13.1
+[290.03s] Gaze@Tester P=8.3 Y=7.5
+[290.43s] Gaze@Tester P=9.5 Y=11.2
+[291.43s] Gaze@Tester P=-1.1 Y=6.6
+[292.03s] Gaze@Tester P=1.6 Y=2.7
+[308.69s] Gaze@Tester P=4.4 Y=10.7
+[319.09s] Gaze@Tester P=2.5 Y=20.6
+[320.16s] Gaze@Tester P=12.0 Y=13.0
+[321.16s] Gaze@Tester P=7.0 Y=9.5
+[321.49s] Gaze@Tester P=-2.6 Y=74.4
+[322.83s] Gaze@Tester P=-0.3 Y=20.2
+[323.83s] Gaze@Tester P=5.2 Y=10.6
+[324.16s] Gaze@Tester P=12.3 Y=13.3
+[327.56s] Gaze@Tester P=7.6 Y=9.0
+
+========================================
+=== Whisper 語音辨識逐字稿 ===
+  共 48 段，快取檔：C:\Users\wayne\Desktop\project\integrate_v4\hurry\output\_speech_44\speech_cache.json
+========================================
+[0.00s ~ 1.56s]  好,等等,還沒有。
+[7.82s ~ 8.74s]  拳頭你看。  ← 關鍵字：你看
+[12.06s ~ 12.98s]  拳頭你看。  ← 關鍵字：你看
+[16.04s ~ 17.00s]  拳頭你看。  ← 關鍵字：你看
+[20.60s ~ 21.58s]  拳頭你看。  ← 關鍵字：你看
+[30.00s ~ 30.48s]  嘶~~~
+[50.60s ~ 50.98s]  啊
+[59.60s ~ 60.34s]  小朋友你好
+[61.60s ~ 63.04s]  歡迎你今天來玩
+[63.60s ~ 64.08s]  等等
+[64.60s ~ 65.86s]  我會用筆
+[67.60s ~ 68.60s]  寫一些字喔
+[80.60s ~ 80.82s]  掰掰
+[114.16s ~ 115.98s]  小蜜蜂
+[125.78s ~ 126.66s]  小蜂
+[138.60s ~ 141.84s]  叮叮叮叮
+[143.60s ~ 143.92s]  菜
+[144.60s ~ 146.30s]  吃饭了吗
+[168.58s ~ 169.90s]  你幫老師上進袋袋裡
+[170.76s ~ 171.20s]  這裡
+[171.72s ~ 172.80s]  幫老師上回去
+[173.54s ~ 174.24s]  你可以嗎
+[174.24s ~ 174.94s]  可以
+[199.64s ~ 201.14s]  好,你幫老婆坐著
+[201.14s ~ 201.96s]  好
+[202.58s ~ 203.24s]  等我
+[209.76s ~ 211.44s]  先不要摸喔
+[215.80s ~ 216.36s]  媽
+[232.38s ~ 234.02s]  小朋友  ← 關鍵字：小朋友
+[234.02s ~ 236.86s]  我要用平板
+[236.86s ~ 239.34s]  画一幅特别的画  ← 關鍵字：画, 画1幅, 画一幅
+[247.42s ~ 249.36s]  畫畫畫畫  ← 關鍵字：畫
+[250.20s ~ 252.56s]  不可以摸 不可以摸
+[257.88s ~ 261.76s]  好 選從作者
+[262.82s ~ 264.36s]  畫好了  ← 關鍵字：畫好了
+[266.04s ~ 266.84s]  你看  ← 關鍵字：你看
+[269.22s ~ 270.18s]  不可以
+[270.18s ~ 273.42s]  等等我要放煙火囉  ← 關鍵字：放煙火
+[273.42s ~ 276.08s]  小朋友准备  ← 關鍵字：小朋友
+[276.08s ~ 277.38s]  三
+[277.38s ~ 278.72s]  二
+[278.72s ~ 279.84s]  一
+[289.16s ~ 290.56s]  你看  ← 關鍵字：你看
+[299.96s ~ 302.50s]  很漂亮吧
+[307.74s ~ 311.10s]  小朋友你看  ← 關鍵字：你看, 小朋友
+[311.10s ~ 316.18s]  小朋友你看  ← 關鍵字：你看, 小朋友
+[316.18s ~ 321.16s]  小朋友你看  ← 關鍵字：你看, 小朋友
+[321.16s ~ 326.00s]  小朋友你看  ← 關鍵字：你看, 小朋友
