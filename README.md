@@ -1,13 +1,19 @@
+# CSIE_project
+專題
+成員名單：B1109240劉立綸、B1229011李瑋恆、B1229056黃昱翔、B1229059黃璿軒
+---
+# 兒童注意力監測與量化分析平台
+# Attention Assessment System for ASD and TD Children
 
-# 多模態 AI 兒童聯合注意力行為分析系統
-
-> **Multi-Modal AI System for Joint Attention Assessment in Children**
->
-> 整合電腦視覺、語音辨識與深度學習，自動化分析受測兒童在結構化測驗情境中的聯合注意力行為
-
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-Research%20Only-lightgrey.svg)]()
+[![Status](https://img.shields.io/badge/Status-In%20Development-yellow.svg)]()
+[![MediaPipe](https://img.shields.io/badge/MediaPipe-Hands%20%7C%20FaceMesh-green.svg)](https://developers.google.com/mediapipe)
+[![YOLO](https://img.shields.io/badge/YOLO-v11-orange.svg)](https://github.com/ultralytics/ultralytics)
+[![Whisper](https://img.shields.io/badge/OpenAI-Whisper%20large--v3-black.svg)](https://github.com/openai/whisper)
 [![Branch](https://img.shields.io/badge/branch-integrate__ver1-blue)](https://github.com/Aliulilun/Attention-Assessment-System/tree/integrate_ver1)
-[![Python](https://img.shields.io/badge/python-3.8--3.12-green)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
+> 整合電腦視覺、語音辨識與深度學習，自動化分析受測兒童在結構化測驗情境中的聯合注意力行為
 
 ---
 
