@@ -1,0 +1,242 @@
+=== Result Summary ===
+Video: c:\project\hurry\video\84.mp4
+----------------------------------------
+Total Score: 4
+Total Gazing Events: 55
+========================================
+=== T0 / Pointing / TB / TH Detail ===
+  First-occurrence = timestamp; Count = total (incl. first)
+  Cooldowns: TB/TH=1.5s, Pointing=0.8s
+========================================
+
+01. Stage 6 -- 看偶寫字 (Puppet Writing)
+    T0       = 61.19s
+    Pointing = not detected
+    TB       = 61.72s  (+0.53s from T0) x8
+    TH       = 64.72s  (+3.53s from T0 / +3.0s from TB) x5
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+02. Stage 7 -- 開筱驚喜袋(Mystery Bag)
+    T0       = 98.89s
+    Pointing = not detected
+    TB       = 108.32s  (+9.43s from T0) x12
+    TH       = 114.05s  (+15.16s from T0 / +5.73s from TB) x4
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+03. Stage 8 -- 手機怪聲(Strange Sound)
+    T0       = 133.0s
+    Pointing = not detected
+    TB       = -- (no TB condition)
+    TH       = not achieved
+    Sequence = T0 -> Pointing -- -> TB OK -> TH --
+
+04. Stage 9 -- 機器人畫畫(Robot Drawing)
+    T0       = 246.58s
+    Pointing = not detected
+    TB       = 255.3s  (+8.72s from T0) x10
+    TH       = 277.69s  (+31.11s from T0 / +22.4s from TB) x1
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+05. Stage 10 -- 機器人煙火秀(Social Referencing)
+    T0       = 286.08s
+    Pointing = not detected
+    TB       = -- (no TB condition)
+    TH       = 286.09s  (+0.01s from T0) x3
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+========================================
+=== Stage Gazing Stats ===
+Stage 6 [看偶寫字 (Puppet Writing)]: scored, GazingCount=18
+Stage 7 [開筱驚喜袋(Mystery Bag)]: scored, GazingCount=31
+Stage 8 [手機怪聲(Strange Sound)]: scored, GazingCount=1
+Stage 9 [機器人畫畫(Robot Drawing)]: scored, GazingCount=5
+----------------------------------------
+=== Full Event Log ===
+[SYSTEM] Scoring Version: HURRY_6to10_BATCH_V1
+[8.93s] Gaze@Tester P=4.8 Y=19.0
+[14.26s] Gaze@Tester P=8.6 Y=20.3
+[19.26s] Gaze@Tester P=5.4 Y=17.5
+[21.13s] Gaze@Tester P=19.5 Y=20.2
+[55.0s] Stage change -> 6
+[61.2s] T0(obj): 看偶寫字 (Puppet Writing)
+[61.7s] TB#1: 看偶寫字 (Puppet Writing) RT=0.53s
+[61.7s] Gazing Stage 6 Score=1 Added=YES
+[62.1s] Gazing Stage 6 Score=1 Added=NO
+[62.4s] Gazing Stage 6 Score=1 Added=NO
+[62.9s] Gazing Stage 6 Score=1 Added=NO
+[64.2s] TB#2: 看偶寫字 (Puppet Writing)
+[64.2s] Gazing Stage 6 Score=1 Added=NO
+[64.7s] TH#1: 看偶寫字 (Puppet Writing) +3.53s
+[64.9s] Gazing Stage 6 Score=1 Added=NO
+[67.3s] TB#3: 看偶寫字 (Puppet Writing)
+[67.3s] Gazing Stage 6 Score=1 Added=NO
+[68.7s] Gazing Stage 6 Score=1 Added=NO
+[68.9s] TB#4: 看偶寫字 (Puppet Writing)
+[71.1s] TH#2: 看偶寫字 (Puppet Writing)
+[71.5s] TB#5: 看偶寫字 (Puppet Writing)
+[71.5s] Gazing Stage 6 Score=1 Added=NO
+[71.7s] Gazing Stage 6 Score=1 Added=NO
+[72.0s] Gazing Stage 6 Score=1 Added=NO
+[72.4s] Gazing Stage 6 Score=1 Added=NO
+[72.7s] Gazing Stage 6 Score=1 Added=NO
+[77.3s] TB#6: 看偶寫字 (Puppet Writing)
+[77.3s] Gazing Stage 6 Score=1 Added=NO
+[77.7s] Gazing Stage 6 Score=1 Added=NO
+[78.3s] TH#3: 看偶寫字 (Puppet Writing)
+[79.3s] TB#7: 看偶寫字 (Puppet Writing)
+[79.3s] Gazing Stage 6 Score=1 Added=NO
+[83.1s] TB#8: 看偶寫字 (Puppet Writing)
+[83.1s] Gazing Stage 6 Score=1 Added=NO
+[83.5s] Gazing Stage 6 Score=1 Added=NO
+[83.7s] TH#4: 看偶寫字 (Puppet Writing)
+[88.5s] TH#5: 看偶寫字 (Puppet Writing)
+[90.0s] Stage change -> 7
+[98.9s] T0(obj): 開筱驚喜袋(Mystery Bag)
+[108.3s] TB#1: 開筱驚喜袋(Mystery Bag) RT=9.43s
+[108.3s] Gazing Stage 7 Score=2 Added=YES
+[108.7s] Gazing Stage 7 Score=2 Added=NO
+[110.5s] TB#2: 開筱驚喜袋(Mystery Bag)
+[110.5s] Gazing Stage 7 Score=2 Added=NO
+[110.8s] Gazing Stage 7 Score=2 Added=NO
+[111.7s] Gazing Stage 7 Score=2 Added=NO
+[112.7s] TB#3: 開筱驚喜袋(Mystery Bag)
+[112.7s] Gazing Stage 7 Score=2 Added=NO
+[114.1s] TH#1: 開筱驚喜袋(Mystery Bag) +15.16s
+[114.1s] Gazing Stage 7 Score=2 Added=NO
+[114.3s] TB#4: 開筱驚喜袋(Mystery Bag)
+[114.3s] Gazing Stage 7 Score=2 Added=NO
+[114.7s] Gazing Stage 7 Score=2 Added=NO
+[115.1s] Gazing Stage 7 Score=2 Added=NO
+[115.5s] Gazing Stage 7 Score=2 Added=NO
+[115.9s] TB#5: 開筱驚喜袋(Mystery Bag)
+[115.9s] Gazing Stage 7 Score=2 Added=NO
+[116.7s] Gazing Stage 7 Score=2 Added=NO
+[116.9s] Gazing Stage 7 Score=2 Added=NO
+[118.6s] TB#6: 開筱驚喜袋(Mystery Bag)
+[118.6s] Gazing Stage 7 Score=2 Added=NO
+[119.0s] Gazing Stage 7 Score=2 Added=NO
+[119.8s] Gazing Stage 7 Score=2 Added=NO
+[121.4s] TB#7: 開筱驚喜袋(Mystery Bag)
+[121.4s] Gazing Stage 7 Score=2 Added=NO
+[121.4s] TH#2: 開筱驚喜袋(Mystery Bag)
+[122.2s] Gazing Stage 7 Score=2 Added=NO
+[122.6s] Gazing Stage 7 Score=2 Added=NO
+[123.2s] TB#8: 開筱驚喜袋(Mystery Bag)
+[123.2s] Gazing Stage 7 Score=2 Added=NO
+[123.8s] Gazing Stage 7 Score=2 Added=NO
+[125.2s] TH#3: 開筱驚喜袋(Mystery Bag)
+[126.4s] TB#9: 開筱驚喜袋(Mystery Bag)
+[126.4s] Gazing Stage 7 Score=2 Added=NO
+[126.9s] Gazing Stage 7 Score=2 Added=NO
+[127.8s] Gazing Stage 7 Score=2 Added=NO
+[128.2s] TB#10: 開筱驚喜袋(Mystery Bag)
+[128.2s] Gazing Stage 7 Score=2 Added=NO
+[128.8s] Gazing Stage 7 Score=2 Added=NO
+[129.1s] Gazing Stage 7 Score=2 Added=NO
+[129.6s] Gazing Stage 7 Score=2 Added=NO
+[129.8s] TB#11: 開筱驚喜袋(Mystery Bag)
+[131.1s] TH#4: 開筱驚喜袋(Mystery Bag)
+[132.4s] TB#12: 開筱驚喜袋(Mystery Bag)
+[132.4s] Gazing Stage 7 Score=2 Added=NO
+[133.0s] Gazing Stage 7 Score=2 Added=NO
+[133.0s] Stage change -> 8
+[133.0s] T0(noise): 手機怪聲(Strange Sound)
+[133.0s] Gazing Stage 8 Score=3 Added=YES
+[133.0s] Gaze hit Stage 8
+[192.57s] Gaze@Tester P=10.9 Y=19.5
+[193.17s] Gaze@Tester P=4.6 Y=20.1
+[193.57s] Gaze@Tester P=3.5 Y=18.6
+[194.17s] Gaze@Tester P=3.9 Y=12.7
+[194.31s] Gaze@Tester P=11.3 Y=12.3
+[194.57s] Gaze@Tester P=5.4 Y=10.3
+[194.71s] Gaze@Tester P=4.1 Y=12.0
+[246.6s] Stage change -> 9
+[246.6s] T0: 機器人畫畫(Robot Drawing)
+[247.37s] Gaze@Tester P=7.2 Y=19.0
+[252.5s] Gaze@Tester P=1.7 Y=13.1
+[254.83s] Gaze@Tester P=14.8 Y=13.2
+[255.3s] TB#1: 機器人畫畫(Robot Drawing) RT=8.72s
+[255.3s] Gaze hit Stage 9
+[259.9s] TB#2: 機器人畫畫(Robot Drawing)
+[261.4s] TB#3: 機器人畫畫(Robot Drawing)
+[263.1s] TB#4: 機器人畫畫(Robot Drawing)
+[263.1s] Gaze hit Stage 9
+[263.2s] Gaze hit Stage 9
+[263.8s] Gaze hit Stage 9
+[264.0s] Gaze hit Stage 9
+[264.2s] Gaze hit Stage 9
+[264.4s] Gaze hit Stage 9
+[264.6s] Gaze hit Stage 9
+[265.2s] TB#5: 機器人畫畫(Robot Drawing)
+[265.2s] Gaze hit Stage 9
+[265.4s] Gaze hit Stage 9
+[265.6s] Gaze hit Stage 9
+[265.8s] Gaze hit Stage 9
+[266.0s] Gaze hit Stage 9
+[266.2s] Gaze hit Stage 9
+[266.7s] TB#6: 機器人畫畫(Robot Drawing)
+[268.8s] TB#7: 機器人畫畫(Robot Drawing)
+[270.6s] TB#8: 機器人畫畫(Robot Drawing)
+[272.4s] TB#9: 機器人畫畫(Robot Drawing)
+[274.0s] TB#10: 機器人畫畫(Robot Drawing)
+[277.7s] TH#1: 機器人畫畫(Robot Drawing) +31.11s
+[277.69s] Gaze@Tester P=13.3 Y=25.7
+[279.63s] Gaze@Tester P=16.2 Y=17.2
+[280.0s] Gazing Stage 9 Score=4 Added=YES
+[280.0s] Gaze hit Stage 9
+[280.4s] Gazing Stage 9 Score=4 Added=NO
+[280.4s] Gaze hit Stage 9
+[280.8s] Gazing Stage 9 Score=4 Added=NO
+[280.8s] Gaze hit Stage 9
+[281.49s] Gaze@Tester P=4.1 Y=9.0
+[282.0s] Gazing Stage 9 Score=4 Added=NO
+[282.0s] Gaze hit Stage 9
+[285.0s] Gazing Stage 9 Score=4 Added=NO
+[286.1s] Stage change -> 10
+[286.1s] T0: 機器人煙火秀(Social Referencing)
+[286.1s] TH#1: 機器人煙火秀(Social Referencing) +0.01s
+[289.1s] TH#2: 機器人煙火秀(Social Referencing)
+[289.09s] Gaze@Tester P=10.4 Y=14.3
+[291.0s] TH#3: 機器人煙火秀(Social Referencing)
+[321.95s] Gaze@Tester P=8.1 Y=22.4
+[328.35s] Gaze@Tester P=14.1 Y=11.6
+[328.49s] Gaze@Tester P=12.5 Y=17.2
+
+========================================
+=== Whisper 語音辨識逐字稿 ===
+  共 34 段，快取檔：c:\project\hurry\output\_speech_84\speech_cache.json
+========================================
+[0.00s ~ 1.02s]  你叫什麼名字?
+[1.10s ~ 2.04s]  大宇辰
+[2.04s ~ 2.62s]  好
+[8.22s ~ 9.20s]  宇辰你看  ← 關鍵字：你看
+[13.60s ~ 14.52s]  宇辰你看  ← 關鍵字：你看
+[18.60s ~ 19.50s]  宇辰你看  ← 關鍵字：你看
+[24.82s ~ 25.66s]  宇辰你看  ← 關鍵字：你看
+[46.00s ~ 48.52s]  把铁锅盖上
+[64.64s ~ 70.40s]  我還用筆寫一些字喔
+[90.98s ~ 93.14s]  雨晨那個袋子裡面有一個玩具
+[93.14s ~ 94.54s]  你可以把它打開來玩
+[100.34s ~ 101.06s]  泡水
+[108.42s ~ 110.06s]  一隻蛇
+[113.04s ~ 114.48s]  一條蛇
+[124.26s ~ 127.90s]  我可以在这里做一些小动作
+[158.98s ~ 174.34s]  在這裏有很多的小小的小小, 他們都會在這裡玩玩, 他們都會在這裡玩玩。
+[174.36s ~ 177.84s]  這裏有很多的小小的小小, 他們都會在這裡玩玩。
+[190.94s ~ 193.80s]  我們接下來要跟機器人玩一下下好不好  ← 關鍵字：機器人
+[195.62s ~ 197.94s]  老師先把這個放在這邊
+[235.56s ~ 236.62s]  在這裏,有一個小小的小小,
+[246.58s ~ 253.52s]  小朋友,我要用平板画一幅特别的画  ← 關鍵字：小朋友, 画, 画1幅, 画一幅
+[253.52s ~ 254.38s]  以前不让你坐过来
+[254.38s ~ 263.58s]  画画画画  ← 關鍵字：画
+[276.62s ~ 278.64s]  画好了  ← 關鍵字：画好了
+[278.64s ~ 281.10s]  你看  ← 關鍵字：你看
+[284.18s ~ 287.64s]  等等我要放烟火了  ← 關鍵字：放烟火
+[287.64s ~ 290.42s]  小朋友准备  ← 關鍵字：小朋友
+[290.42s ~ 291.90s]  三
+[291.90s ~ 293.12s]  二
+[293.12s ~ 294.18s]  一
+[313.14s ~ 316.86s]  你看,很漂亮吧?  ← 關鍵字：你看
+[317.02s ~ 317.90s]  很漂亮
+[321.72s ~ 325.48s]  小朋友,你看  ← 關鍵字：你看, 小朋友
+[327.82s ~ 330.22s]  小朋友你看  ← 關鍵字：你看, 小朋友
