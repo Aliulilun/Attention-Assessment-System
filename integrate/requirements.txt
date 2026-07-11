@@ -1,0 +1,44 @@
+# ==================== 核心依賴 ====================
+# Python 3.8 - 3.12
+
+# YOLO 和物件檢測
+ultralytics>=8.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 視覺處理
+opencv-contrib-python>=4.13.0
+numpy>=1.24.0
+
+# 視線估計（MediaPipe Tasks API）
+mediapipe>=0.10.32
+
+# 語音識別
+openai-whisper
+
+# OCR (EasyOCR)
+easyocr
+
+# 數據處理
+pandas>=2.0.0
+
+# 配置文件處理
+pyyaml>=6.0
+
+# ==================== 可選依賴 ====================
+# GPU 加速（如果使用 CUDA）
+# torch==2.0.0+cu118 -f https://download.pytorch.org/whl/torch_stable.html
+# torchvision==0.15.0+cu118 -f https://download.pytorch.org/whl/torch_stable.html
+
+# ==================== 系統依賴 ====================
+# 注意：某些套件可能需要系統級依賴
+# 
+# macOS:
+#   - brew install portaudio (for pyaudio)
+#
+# Linux (Ubuntu/Debian):
+#   - sudo apt-get install portaudio19-dev
+#   - sudo apt-get install python3-pyaudio
+#
+# Windows:
+#   - 可能需要安裝 Microsoft Visual C++ 14.0 或更新版本

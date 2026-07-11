@@ -15,13 +15,13 @@ class ModelManager:
         # ==========================================
         self.use_cuda = torch.cuda.is_available()
         if self.use_cuda:
+            torch.backends.cudnn.benchmark = True
             print(f">>> [ModelManager] 偵測到 GPU：{torch.cuda.get_device_name(0)}，啟用 CUDA 加速！")
-            torch.backends.cudnn.benchmark = True # 讓 cuDNN 自動尋找最適合的卷積演算法
         else:
             print(">>> [ModelManager] ⚠️ 沒有偵測到 CUDA，將使用 CPU 進行推論，速度會較慢。")
 
         # ==========================================
-        # 🌟 階段與模型映射表 (更新 Stage 6 與 Stage 8)
+        # 🌟 階段與模型映射表
         # ==========================================
         self.stage_model_map = {
             1: "front_model.pt",
@@ -29,9 +29,14 @@ class ModelManager:
             3: "background_model.pt",
             4: "background_model.pt",
             5: "balloon_model.pt",
-            6: "doll_model.pt",         # ✅ 第六階段：改為玩偶模型
+            6: "doll_model.pt",
             7: "toy_model.pt",
-            8: "robot_point_model.pt"   # ✅ 第八階段：導入機器人指向模型
+            9: "tablet_model.pt",
+            10: "tablet_model.pt",      # ✅ 新增：第 10 階段 TB 判定用（看向平板）
+            11: "front_model.pt",       # ✅ 新增：第 11~12 階段 (前方物品)
+            12: "front_model.pt",
+            13: "background_model.pt",  # ✅ 新增：第 13~14 階段 (背景物品)
+            14: "background_model.pt"
         }
 
     def _get_model(self, model_name):
@@ -51,81 +56,69 @@ class ModelManager:
 
     def detect_objects(self, frame, stage):
         """
-        執行 YOLO 偵測，並回傳物件框的座標陣列
+        執行 YOLO 偵測。
+        - 階段 1~8：回傳目標物 boxes (單一 list)
+        - 階段 9~14：回傳 (target_boxes, robot_boxes) 雙框 tuple，提供主程式做 TH 判定
         """
-        model_name = self.stage_model_map.get(stage)
-        if not model_name:
-            return []
-
-        model = self._get_model(model_name)
-        if not model:
-            return []
 
         # ==========================================
-        # 🤖 第八階段：機器人專屬指向判定與繪圖
+        # 🤖 階段 9 ~ 14：雙模型並行派發 (目標物 + 機器人)
         # ==========================================
-        if stage == 8:
-            # 使用你的黃金參數：conf=0.6, iou=0.5
-            results = model.predict(
-                source=frame, 
-                conf=0.6, 
-                iou=0.5, 
-                imgsz=960, 
-                device=0 if self.use_cuda else "cpu",
-                half=self.use_cuda,
-                verbose=False
-            )
+        if stage >= 9:
+            target_boxes = []
+            robot_boxes = []
 
-            if results and len(results) > 0:
-                r = results[0]
-                if r.keypoints is not None and r.boxes is not None:
-                    boxes = r.boxes.xyxy.cpu().numpy()
-                    confs = r.boxes.conf.cpu().numpy()
-                    kpts = r.keypoints.xy.cpu().numpy()
-                    
-                    for i in range(len(boxes)):
-                        bx1, by1, bx2, by2 = boxes[i]
-                        box_conf = confs[i]
+            # 1. 取得當前階段的「目標物」模型與框 (平板、前方物件或背景物件)
+            target_model_name = self.stage_model_map.get(stage)
+            if target_model_name:
+                target_model = self._get_model(target_model_name)
+                if target_model:
+                    # 🌟 修改：stage 11/12 信心度降至 0.15，確保能捕捉到低信心度偵測（實測約 0.22~0.33）
+                    target_conf = 0.15 if stage in [11, 12] else 0.75
+                    results = target_model.predict(
+                        source=frame, conf=target_conf, imgsz=960,
+                        device=0 if self.use_cuda else "cpu", half=self.use_cuda, verbose=False
+                    )
+                    if results and len(results) > 0:
+                        for box in results[0].boxes.xyxy.cpu().numpy():
+                            target_boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+
+            # 2. 獨立取得「機器人」模型與框 (供 TH 判定用)
+            robot_model = self._get_model("robot_model.pt") # ✅ 導入新創立的純偵測模型
+            if robot_model:
+                robot_results = robot_model.predict(
+                    source=frame, conf=0.6, imgsz=960, # 機器人信心度設為 0.6，可視情況微調
+                    device=0 if self.use_cuda else "cpu", half=self.use_cuda, verbose=False
+                )
+                if robot_results and len(robot_results) > 0:
+                    for box in robot_results[0].boxes.xyxy.cpu().numpy():
+                        robot_boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
                         
-                        # A. 計算外框的幾何中心 (射線起點)
-                        cx = int((bx1 + bx2) / 2)
-                        cy = int((by1 + by2) / 2)
-                        
-                        # 畫出機器人外框
-                        cv2.rectangle(frame, (int(bx1), int(by1)), (int(bx2), int(by2)), (255, 100, 100), 2)
-                        cv2.putText(frame, f"Robot Conf: {box_conf:.2f}", (int(bx1), int(by1)-10), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 100, 100), 2)
-
-                        # B. 抓取唯一指尖關鍵點 (射線終點)
-                        if i < len(kpts) and len(kpts[i]) > 0:
-                            tx, ty = int(kpts[i][0][0]), int(kpts[i][0][1])
-                            if tx > 0 and ty > 0:
-                                cv2.circle(frame, (cx, cy), 6, (0, 255, 255), -1) 
-                                cv2.circle(frame, (tx, ty), 6, (0, 0, 255), -1)   
-                                
-                                # C. 計算並延伸射線
-                                vec = np.array([tx, ty]) - np.array([cx, cy])
-                                if np.linalg.norm(vec) > 0:
-                                    unit_vec = vec / np.linalg.norm(vec)
-                                    end_point = np.array([tx, ty]) + unit_vec * 1500 
-                                    
-                                    # 畫出黃色粗射線
-                                    cv2.line(frame, (cx, cy), (int(end_point[0]), int(end_point[1])), (0, 255, 255), 4)
-            
-            # 💡 重要：第八階段回傳空陣列 []
-            # 因為這是機器人的手臂，不是要讓小朋友去「指向命中」的目標物
-            # 這樣 interaction.py 就不會誤把機器人當作氣球或玩具來產生 HIT 判定
-            return []
+            # 回傳兩個獨立的框陣列
+            return target_boxes, robot_boxes
 
         # ==========================================
-        # 🎈 其他階段 (1~7)：目標物偵測
+        # 🎈 階段 1 ~ 8：單目標物偵測 (原版邏輯完整保留)
         # ==========================================
         else:
-            # 統一使用嚴格信心度：conf=0.75
+            model_name = self.stage_model_map.get(stage)
+            if not model_name:
+                return [] # 包含已被拔除模型的第 8 階段，會直接安全地回傳空陣列
+
+            model = self._get_model(model_name)
+            if not model:
+                return []
+
+            # 核心修改：客製化各階段的信心度門檻
+            if stage in [1, 2, 6, 7]:
+                current_conf = 0.7
+            else:
+                current_conf = 0.75
+            
             results = model.predict(
                 source=frame,
-                conf=0.75,                 
-                imgsz=960,                 
+                conf=current_conf,                
+                imgsz=960,                
                 device=0 if self.use_cuda else "cpu",
                 half=self.use_cuda,        
                 verbose=False              
@@ -134,8 +127,20 @@ class ModelManager:
             boxes = []
             if results and len(results) > 0:
                 boxes_data = results[0].boxes.xyxy.cpu().numpy()
+                
+                frame_h, frame_w = frame.shape[:2]
+                frame_area = frame_w * frame_h
+                
                 for box in boxes_data:
-                    boxes.append((int(box[0]), int(box[1]), int(box[2]), int(box[3])))
+                    x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                    
+                    box_area = (x2 - x1) * (y2 - y1)
+                    area_ratio = box_area / frame_area
+                    
+                    # 面積過濾防線：確保人體被濾掉
+                    if stage in [1, 2, 6, 7] and area_ratio > 0.40:
+                        continue
+                        
+                    boxes.append((x1, y1, x2, y2))
             
-            # 回傳目標物框框給 interaction.py 處理人類互動
             return boxes

@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ⚠️ 只排除 gaze 目錄下的大型模型
+model/gaze/*.pth
+model/gaze/*.pth.tar
+model/gaze/*.onnx
+
+# 輸出檔案
+output/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# 暫存檔案
+*.log
+*.txt~
+*.cache
+.pytest_cache/
+
+# 語音快取
+*.wav
+transcripts/
