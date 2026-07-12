@@ -17,8 +17,8 @@ os.environ["GLOG_minloglevel"]      = "3"   # 0=INFO 1=WARNING 2=ERROR 3=FATAL�
 os.environ["TF_CPP_MIN_LOG_LEVEL"]  = "3"   # 同時壓制 TensorFlow 底層 log
 
 # ============================================================
-# ★ 批次精簡版：只量測第 6-10 階段
-#    - ACTIVE_STAGES = {6, 7, 8, 9, 10}
+# ★ 批次版：量測第 1-10 階段
+#    - ACTIVE_STAGES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
 #    - 批次掃描 video/ 資料夾，一次跑完所有影片
 #    - 輸出 output/{原始檔名}.mp4 + output/{原始檔名}.txt
 #    - MODEL_DIR 指向 C:\project\model（不需複製模型檔）
@@ -46,9 +46,9 @@ VIDEO_DIR   = os.path.join(BASE_DIR, 'video')
 OUTPUT_DIR  = os.path.join(BASE_DIR, 'output')
 CONFIG_PATH = os.path.join(PROJECT_DIR, 'config.yaml')    # 使用原始專案的 config
 
-ACTIVE_STAGES   = {6, 7, 8, 9, 10}   # ★ 本次只量測這些階段
+ACTIVE_STAGES   = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}   # ★ 量測第 1-10 階段
 SHOW_PREVIEW    = True                 # ★ False = 關閉預覽視窗（批次加速，省 I/O）
-SCORING_VERSION = 'HURRY_6to10_BATCH_V1'
+SCORING_VERSION = 'HURRY_1to10_BATCH_V1'
 
 # ★ 跳幀設定（效能優化）
 # 說明：EasyOCR / 視線估計 / YOLO 不需要每幀都跑，
@@ -62,9 +62,9 @@ OCR_SKIP  = 15  # 覆寫 SignboardTracker 的 OCR_FRAME_INTERVAL（預設 2 → 
 # 🌟 修改：speech.py 新增 noise_sample_path 參數，此處明確傳入固定路徑；
 #          若檔案不存在則傳 None → speech_engine 退回純頻譜特徵偵測
 NOISE_SAMPLE_PATH = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'model', 'noise.wav')
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'model', 'noisesample', 'noise.wav')
 )
-# 等同於 C:\project\model\noise.wav
+# 等同於 C:\project\model\noisesample\noise.wav
 
 SPEECH_KEYWORDS = [
     "開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉",
@@ -199,7 +199,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
         sign_tracker.initialize_roi_auto(first_frame)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-    win_name = f"Preview: {video_basename} (Stages 6-10)"
+    win_name = f"Preview: {video_basename} (Stages 1-10)"
     if SHOW_PREVIEW:
         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(win_name, 1280, 720)
@@ -246,7 +246,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             if current_stage < 8:
                 try:
                     detected_stage = sign_tracker.detect_stage(frame)
-                    if detected_stage is not None and detected_stage in {6, 7}:
+                    if detected_stage is not None and detected_stage <= 7:
                         if detected_stage != current_stage:
                             scoring.handle_stage_change(current_stage, detected_stage, current_time_sec)
                             current_stage = detected_stage
@@ -525,7 +525,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                         f"Time: {current_time_sec:.1f}s  |  {video_basename}",
                         (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, c_text, 2)
             cv2.putText(frame,
-                        f"Stage: {current_stage}  [Measuring: 6-10 only]",
+                        f"Stage: {current_stage}  [Measuring: 1-10]",
                         (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_text, 2)
             cv2.putText(frame,
                         f"Keyword: {'YES (Active)' if is_in_trigger_window else 'NO (Idle)'}",
@@ -625,10 +625,11 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                         _t0  = _rec.get('start', 0.0)
                         _t1  = _rec.get('end',   0.0)
                         _txt = _rec.get('text', '').strip()
-                        _kws = _rec.get('keywords', [])
+                        # 🌟 修改：keywords 在 trigger_events 層，不在 segment_record 層
+                        _kws = [k for ev in _rec.get('trigger_events', []) for k in ev.get('keywords', [])]
                         _line = f"[{_t0:.2f}s ~ {_t1:.2f}s]  {_txt}"
                         if _kws:
-                            _line += f"  ← 關鍵字：{', '.join(_kws)}"
+                            _line += f"  ← 關鍵字：{', '.join(dict.fromkeys(_kws))}"  # fromkeys 去重保序
                         _f.write(_line + "\n")
                 print(f">>> 逐字稿已附加至 {out_txt_path}（{len(_records)} 段）")
             else:
@@ -699,7 +700,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
 # ============================================================
 def main():
     print("=" * 60)
-    print("🚀  批次分析系統 — 只量測第 6-10 階段")
+    print("🚀  批次分析系統 — 量測第 1-10 階段")
     print(f"    ACTIVE_STAGES = {sorted(ACTIVE_STAGES)}")
     print(f"    SCORING_VERSION = {SCORING_VERSION}")
     print("=" * 60)
@@ -793,7 +794,7 @@ def main():
     print("=" * 60)
     model_manager = ModelManager(model_dir=MODEL_DIR)
     pose_path = os.path.join(MODEL_DIR, 'yolo11n-pose.pt')
-    hand_path = os.path.join(MODEL_DIR, 'hand_landmarker.task')
+    hand_path = os.path.join(MODEL_DIR, 'gaze', 'hand_landmarker.task')  # 🌟 修改：實際路徑在 model/gaze/ 下
     # 🌟 修改：明確傳入 hand_model_path，避免 Windows junction/symlink 下
     #          __file__ 解析到真實路徑（project_v3/）而非 C:\project\ 導致 FileNotFoundError
     interaction = InteractionEngine(pose_model_path=pose_path, hand_model_path=hand_path, sma_window=5)

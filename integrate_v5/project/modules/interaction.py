@@ -53,9 +53,10 @@ class InteractionEngine:
         if hand_model_path and os.path.exists(hand_model_path):
             model_path = hand_model_path
         else:
+            # 🌟 修改：hand_landmarker.task 實際放在 model/gaze/ 子目錄下
             model_path = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                'model', 'hand_landmarker.task'
+                'model', 'gaze', 'hand_landmarker.task'
             )
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"❌ 找不到 MediaPipe 模型檔案: {model_path}")

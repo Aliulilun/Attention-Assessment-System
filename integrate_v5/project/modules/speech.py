@@ -84,9 +84,6 @@ class SpeechTrigger:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         engine_path = os.path.join(base_dir, "speech_engine.py")
 
-        # 組合關鍵字字串
-        kw_str = " ".join(self.keywords)
-
         # 呼叫獨立的 Python 行程來執行語音辨識
         cmd = [
             sys.executable, engine_path,

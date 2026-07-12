@@ -60,8 +60,6 @@ project_AI/
 │       └── visualization.py           # 視線軌跡與頭部姿態立體渲染
 │
 ├── model/                         # AI 模型權重（不上傳 Git，見下方說明）
-│   ├── noise.wav                  # ⭐ 手機怪聲參考樣本（Stage 7→8 音訊模板，1~3 秒）
-│   ├── hand_landmarker.task       # MediaPipe 手部特徵點模型（主程式用）
 │   ├── front_model.pt             # YOLO：前方物件
 │   ├── background_model.pt        # YOLO：背景物件
 │   ├── balloon_model.pt           # YOLO：氣球
@@ -70,10 +68,12 @@ project_AI/
 │   ├── tablet_model.pt            # YOLO：平板
 │   ├── robot_model.pt             # YOLO：機器人
 │   ├── yolo11n-pose.pt            # YOLO：人體姿態骨架
+│   ├── noisesample/
+│   │   └── noise.wav              # ⭐ 手機怪聲參考樣本（Stage 7→8 音訊模板，1~3 秒）
 │   └── gaze/
 │       ├── epoch_24_ckpt.pth.tar  # ResNet-50 視線網路權重（~88MB）
 │       ├── face_landmarker.task   # MediaPipe 臉部特徵點模型
-│       ├── hand_landmarker.task   # MediaPipe 手部特徵點模型（視線模組用）
+│       ├── hand_landmarker.task   # ⭐ MediaPipe 手部特徵點模型（interaction.py 讀取）
 │       ├── nano.pt                # YOLO 人臉追蹤核心
 │       └── face_model_ethxgaze.txt # ETH-XGaze 3D 人臉幾何座標
 │
