@@ -98,6 +98,19 @@ class InteractionEngine:
             "Tester": deque(maxlen=sma_window)
         }
 
+        # ============================================================
+        # 🌟 新增（問題1：邊界處歸屬閃爍）：手部歸屬追蹤器
+        # 以「手腕位置」跨幀匹配同一隻手，對逐幀的 raw owner 做多數投票，
+        # 並加入遲滯：必須連續多幀壓倒性的相反證據才允許換主人，
+        # 避免手在 Tester/Child 分界線附近時綠橘來回跳。
+        # 每個 track: {"pos": (x,y), "owner": str, "votes": deque, "age": int}
+        # ============================================================
+        self.hand_owner_tracks: List[Dict[str, Any]] = []
+        self.HAND_TRACK_DIST_RATIO: float = 0.10   # 匹配半徑（佔幀寬比例）
+        self.HAND_OWNER_VOTE_WIN: int = 11         # 投票視窗（幀）
+        self.HAND_OWNER_SWITCH_RATIO: float = 0.7  # 相反票數佔比 ≥ 0.7 才換主人
+        self.HAND_TRACK_MAX_AGE: int = 15          # 連續幾幀沒匹配到就刪除 track
+
     @staticmethod
     def get_angle(v1: np.ndarray, v2: np.ndarray) -> float:
         unit_v1 = v1 / (np.linalg.norm(v1) + 1e-9)
@@ -151,20 +164,44 @@ class InteractionEngine:
         if dist(idx_tip, idx_mcp) <= dist(idx_pip, idx_mcp) + 0.04 * scale: return None
         if dist(idx_tip, wri) < 0.17 * scale: return None
 
+        # ============================================================
+        # 🌟 新增（問題4：射線連錯手指）：食指尖必須是「離手腕最遠」的指尖
+        # 若中指/無名指/小指尖比食指尖更遠，代表：
+        #   (a) 這不是標準指向手勢（伸出的是別根手指），或
+        #   (b) MediaPipe landmark 標錯位（"食指" landmark 實際落在中指上）
+        # 兩種情況都不該形成射線，直接拒絕，保證射線永遠是手腕→食指。
+        # ============================================================
+        d_idx_wri = dist(idx_tip, wri)
+        if d_idx_wri <= dist(mid_tip, wri): return None
+        if d_idx_wri <= dist(rng_tip, wri): return None
+        if d_idx_wri <= dist(pnk_tip, wri): return None
+
+        # ============================================================
+        # 🌟 新增（問題3：手放桌上誤生成射線）：兩種角色一律要求
+        # 中指與無名指「彎曲」。手平放桌面時五指全部伸直，
+        # 中指/無名指尖會遠超過其 PIP，此檢查會直接拒絕。
+        # 真正的指向手勢（食指伸、其餘捲起）不受影響。
+        # ============================================================
+        is_mid_folded = dist(mid_tip, wri) < dist(mid_pip, wri) + 0.10 * scale
+        is_rng_folded = dist(rng_tip, wri) < dist(rng_pip, wri) + 0.10 * scale
+        if not (is_mid_folded and is_rng_folded): return None
+
         if owner == "Tester":
             dist_idx = dist(idx_tip, idx_mcp)
             if dist_idx <= dist(mid_tip, mid_mcp) or dist_idx <= dist(rng_tip, rng_mcp) or dist_idx <= dist(pnk_tip, pnk_mcp):
                 return None
             if dist(idx_tip, wri) < dist(mid_tip, wri) + 0.13 * scale: return None
             if (idx_tip[0] - wri[0]) < 0.07 * scale: return None
+            # 🌟 新增（問題3）：食指方向須與手腕→食指根方向大致一致（同兒童標準、稍寬鬆）
+            if self.get_angle(idx_mcp - wri, idx_tip - idx_mcp) > 50: return None
         else:
             if dist(idx_tip, wri) <= dist(mid_tip, wri) + 0.07 * scale: return None
-            is_mid_folded = dist(mid_tip, wri) < dist(mid_pip, wri) + 0.10 * scale
-            is_rng_folded = dist(rng_tip, wri) < dist(rng_pip, wri) + 0.10 * scale
-            if not (is_mid_folded and is_rng_folded): return None
             if self.get_angle(idx_mcp - wri, idx_tip - idx_mcp) > 40: return None
 
         idx_angle = self.get_angle(idx_pip - idx_mcp, idx_tip - idx_pip)
+        # 🌟 新增（問題3）：食指本身必須打直（PIP 彎曲角 ≤ 45°）。
+        # 手鬆放桌上、食指微彎垂下時角度會超標，不形成射線。
+        if idx_angle > 45: return None
         return idx_angle
 
     @staticmethod
@@ -284,6 +321,59 @@ class InteractionEngine:
                         return True
         return False
 
+    def _smooth_hand_owner(self, wrist_px: Tuple[int, int], raw_owner: str, frame_w: int) -> str:
+        """
+        🌟 新增（問題1）：手部歸屬時間平滑 + 遲滯。
+        以手腕位置找最近的既有 track（半徑 = 幀寬 * HAND_TRACK_DIST_RATIO），
+        把本幀的 raw_owner 投進該 track 的投票視窗；
+        只有當「相反 owner」票數佔比 >= HAND_OWNER_SWITCH_RATIO 時才切換，
+        否則維持原本 owner，徹底消除邊界處綠/橘閃爍。
+        """
+        wx, wy = float(wrist_px[0]), float(wrist_px[1])
+        match_radius = frame_w * self.HAND_TRACK_DIST_RATIO
+
+        best_track, best_dist = None, float('inf')
+        for track in self.hand_owner_tracks:
+            # 🌟 同一幀內一個 track 只能被一隻手認領，
+            # 避免邊界處兩隻手（施測者+兒童）距離近時互相污染投票
+            if track.get("used_this_frame", False):
+                continue
+            d = math.hypot(wx - track["pos"][0], wy - track["pos"][1])
+            if d < best_dist:
+                best_dist, best_track = d, track
+
+        if best_track is not None and best_dist <= match_radius:
+            best_track["pos"] = (wx, wy)
+            best_track["age"] = 0
+            best_track["used_this_frame"] = True
+            best_track["votes"].append(raw_owner)
+            votes = best_track["votes"]
+            opposite = "Child" if best_track["owner"] == "Tester" else "Tester"
+            opp_ratio = sum(1 for v in votes if v == opposite) / len(votes)
+            # 遲滯：相反證據要夠壓倒性（且視窗已累積夠多幀）才換主人
+            if len(votes) >= 5 and opp_ratio >= self.HAND_OWNER_SWITCH_RATIO:
+                best_track["owner"] = opposite
+                best_track["votes"] = deque(votes, maxlen=self.HAND_OWNER_VOTE_WIN)
+            return best_track["owner"]
+
+        # 沒有匹配到 → 新的手，建立 track，首幀直接用 raw_owner
+        new_track = {
+            "pos": (wx, wy),
+            "owner": raw_owner,
+            "votes": deque([raw_owner], maxlen=self.HAND_OWNER_VOTE_WIN),
+            "age": 0,
+            "used_this_frame": True
+        }
+        self.hand_owner_tracks.append(new_track)
+        return raw_owner
+
+    def _age_hand_tracks(self) -> None:
+        """🌟 新增（問題1）：每幀開始時老化 track 並重置本幀認領旗標，太久沒匹配到的刪除。"""
+        for track in self.hand_owner_tracks:
+            track["age"] += 1
+            track["used_this_frame"] = False
+        self.hand_owner_tracks = [t for t in self.hand_owner_tracks if t["age"] <= self.HAND_TRACK_MAX_AGE]
+
     def _validate_hand_geometry(self, hand_landmarks_list, FRAME_W: int, FRAME_H: int) -> bool:
         """
         幾何完整性驗證：排除以下三種情況
@@ -340,12 +430,16 @@ class InteractionEngine:
             "Child":  deque(maxlen=self.ray_angle_history["Child"].maxlen),
             "Tester": deque(maxlen=self.ray_angle_history["Tester"].maxlen),
         }
+        self.hand_owner_tracks = []  # 🌟 新增：跨影片清空手部歸屬追蹤器
         print(">>> [InteractionEngine] tracking 狀態已重置")
 
     def analyze_interaction(self, frame: np.ndarray, yolo_boxes: List[Tuple[float, float, float, float]], elapsed_ms: Optional[int] = None) -> bool:
         FRAME_H, FRAME_W = frame.shape[:2]
         DIVIDER_X = int(FRAME_W * self.divider_ratio)
         child_hit_target = False
+
+        # 🌟 新增（問題1）：每幀老化手部歸屬 track
+        self._age_hand_tracks()
 
         cv2.line(frame, (DIVIDER_X, 0), (DIVIDER_X, FRAME_H), (255, 255, 255), 2)
         cv2.putText(frame, "TESTER ZONE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, self.C_TESTER, 2)
@@ -509,6 +603,13 @@ class InteractionEngine:
                         else:
                             best_owner = "Child"    # 連動弱 → 可能是身體漏偵測的兒童手
 
+                # ============================================================
+                # 🌟 新增（問題1）：歸屬時間平滑
+                # 上面所有邏輯得到的是「本幀 raw owner」；
+                # 交給追蹤器做跨幀投票 + 遲滯，邊界處不再逐幀翻轉。
+                # ============================================================
+                best_owner = self._smooth_hand_owner(p_wri, best_owner, FRAME_W)
+
                 # 🌟 修改：幾何驗證在繪製之前
                 # 只有通過驗證（手指清晰可見、無跨手/跨人汙染）才繪製標籤與關鍵點
                 if not self._validate_hand_geometry(hand_landmarks_list, FRAME_W, FRAME_H):
@@ -526,24 +627,45 @@ class InteractionEngine:
                     continue
 
                 current_frame_pointing[best_owner] = True
+                # 🌟 修改（問題4）：射線一律「手腕 → 食指尖」
+                # 方向 = 食指尖 - 手腕；起點也改為手腕（原為食指 MCP）
                 raw_vec = np.array(p_idx) - np.array(p_wri)
 
                 if best_owner in candidate_rays:
                     if idx_angle < candidate_rays[best_owner]['angle']:
-                        candidate_rays[best_owner] = {'origin': p_mcp, 'vec': raw_vec, 'angle': idx_angle}
+                        candidate_rays[best_owner] = {'origin': p_wri, 'vec': raw_vec, 'angle': idx_angle}
                 else:
-                    candidate_rays[best_owner] = {'origin': p_mcp, 'vec': raw_vec, 'angle': idx_angle}
+                    candidate_rays[best_owner] = {'origin': p_wri, 'vec': raw_vec, 'angle': idx_angle}
 
+        # ============================================================
+        # 🌟 修改（問題2：射線/骨架閃爍 → 一次指向被算成多次）
+        # 啟用 dwell / hold 機制（原本宣告了但沒接上）：
+        # - Dwell：連續指向 >= DWELL_FRAMES 幀才開始顯示射線，
+        #   濾掉單幀誤判的瞬間閃現。
+        # - Hold：指向中斷後保留 HOLD_FRAMES 幀緩衝，
+        #   MediaPipe 短暫掉偵測不會讓射線消失又出現，
+        #   同一次指向動作維持連續、不會被切成多次事件。
+        # ============================================================
         for owner in ["Tester", "Child"]:
             if current_frame_pointing[owner]:
-                pointing_owners.add(owner)
+                self.dwell_counters[owner] += 1
+                self.hold_counters[owner] = self.HOLD_FRAMES
                 if owner in candidate_rays:
                     self.ray_history[owner]["origin"].append(candidate_rays[owner]['origin'])
                     self.ray_history[owner]["vector"].append(candidate_rays[owner]['vec'])
             else:
-                self.ray_history[owner]["origin"].clear()
-                self.ray_history[owner]["vector"].clear()
-                self.ray_angle_history[owner].clear()
+                if self.hold_counters[owner] > 0:
+                    # 短暫掉偵測：進入 hold 緩衝，保留射線歷史，不清空
+                    self.hold_counters[owner] -= 1
+                else:
+                    # 緩衝耗盡 → 指向動作真正結束，重置
+                    self.dwell_counters[owner] = 0
+                    self.ray_history[owner]["origin"].clear()
+                    self.ray_history[owner]["vector"].clear()
+                    self.ray_angle_history[owner].clear()
+
+            if self.dwell_counters[owner] >= self.DWELL_FRAMES and self.hold_counters[owner] > 0:
+                pointing_owners.add(owner)
 
         for owner in ["Tester", "Child"]:
             if owner in pointing_owners and len(self.ray_history[owner]["vector"]) > 0:

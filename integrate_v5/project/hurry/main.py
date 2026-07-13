@@ -53,8 +53,8 @@ SCORING_VERSION = 'HURRY_1to10_BATCH_V1'
 # ★ 跳幀設定（效能優化）
 # 說明：EasyOCR / 視線估計 / YOLO 不需要每幀都跑，
 #       被量測目標（閃卡、機器人）移動緩慢，快取上一幀結果可大幅提速。
-YOLO_SKIP = 3   # 每 N 幀才執行一次 YOLO 物件偵測（物件幾乎不動，快取複用安全）
-GAZE_SKIP = 2   # 每 N 幀才執行一次視線估計（TB/TH 判定容許 2 幀延遲，不影響精度）
+YOLO_SKIP = 1   # 🌟 修改：改為逐幀執行（不跳幀），確保 TB/TH 時間點精確
+GAZE_SKIP = 1   # 🌟 修改：改為逐幀執行（不跳幀），確保視線偵測無延遲
 OCR_SKIP  = 15  # 覆寫 SignboardTracker 的 OCR_FRAME_INTERVAL（預設 2 → 改 15）
                 # 牌子在畫面靜止數秒，每 0.5s 偵測一次即可
 
@@ -211,7 +211,12 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
     # 🌟 跳幀快取（搭配 YOLO_SKIP / GAZE_SKIP 使用）
     last_yolo_boxes  = []    # 上一次 YOLO 偵測到的目標物框
     last_robot_boxes = []    # 上一次 YOLO 偵測到的機器人框
-    last_gaze_result = None  # 上一次視線估計結果（含 gaze_vector, face_bbox 等）
+    last_child_is_pointing_hit = False  # 上一次指向判定結果（YOLO_SKIP 跳幀時沿用）
+
+    # 🌟 視線容錯快取（推論與繪圖分離用）
+    last_valid_gaze = None        # 只存 success=True 的最近一筆視線結果
+    gaze_fallback_counter = 0     # 連續失敗幀數計數器
+    MAX_GAZE_FALLBACK = 5         # 超過此值才清空 last_valid_gaze（防閃爍）
 
     # 🌟 計時診斷（每 TIMING_REPORT_INTERVAL 幀印一次各段耗時，協助找瓶頸）
     import time as _time
@@ -232,6 +237,10 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             frame_count      += 1
             current_time_sec  = frame_count / fps
             is_in_trigger_window = speech.is_in_window(current_time_sec, trigger_windows)
+
+            # 🌟 推論與繪圖分離：推論全用 frame（乾淨原始幀），繪圖全用 display_frame
+            display_frame = frame.copy()
+
             _t_frame_start = _time.perf_counter()
             # 🌟 修正 _t_other 計算：記錄本幀開始前各段累積量，幀末再取差值
             _prev_ocr = _t_ocr; _prev_yolo = _t_yolo
@@ -297,7 +306,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             # 🌟 修改：傳 sign_tracker.current_stage（tracker 實際讀到的數字）
             # 而非 main.py 的 current_stage（0），避免顯示「Sign:0」誤導
             # 例：牌子顯示「1」→ OCR 正確讀成 1 → Sign:1（而非 Sign:0）
-            sign_tracker.draw_boxes(frame, sign_tracker.current_stage)
+            sign_tracker.draw_boxes(display_frame, sign_tracker.current_stage)
             _t_ocr += _time.perf_counter() - _t0  # 計時：OCR 段結束
 
             # ──────────────────────────────────────────────
@@ -328,22 +337,22 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     # 視覺化：目標物（綠色框）
                     for box in yolo_boxes:
                         bx1, by1, bx2, by2 = map(int, box)
-                        cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
-                        
+                        cv2.rectangle(display_frame, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
+
                         # 🌟 依照 main 的設定，Stage 9 與 10 標示為 Tablet
                         if current_stage in [9, 10]:
                             label = f"Tablet (Stage {current_stage})"
                         else:
                             label = f"Target (S{current_stage})"
-                            
-                        cv2.putText(frame, label,
+
+                        cv2.putText(display_frame, label,
                                     (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
                     # 視覺化：機器人（橘色框）
                     for box in robot_boxes:
                         bx1, by1, bx2, by2 = map(int, box)
-                        cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 165, 255), 2)
-                        cv2.putText(frame, "Robot",
+                        cv2.rectangle(display_frame, (bx1, by1), (bx2, by2), (0, 165, 255), 2)
+                        cv2.putText(display_frame, "Robot",
                                     (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
 
             except Exception as e:
@@ -358,19 +367,20 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             _t0 = _time.perf_counter()
             if frame_count % YOLO_SKIP == 0:
                 try:
-                    # 🌟 傳入影片內部精確時間（ms），搭配 _ts_base 確保跨影片 timestamp 單調遞增
+                    # 🌟 傳入 display_frame（與 frame 同內容的乾淨複本），
+                    #    骨架/射線畫在 display_frame，不污染 frame 供 Gaze 推論使用。
                     _elapsed_ms = int(current_time_sec * 1000)
-                    child_is_pointing_hit = interaction.analyze_interaction(frame, yolo_boxes, elapsed_ms=_elapsed_ms)
+                    last_child_is_pointing_hit = interaction.analyze_interaction(display_frame, yolo_boxes, elapsed_ms=_elapsed_ms)
                 except Exception as _ia_err:
                     # MediaPipe 或 YOLO-Pose 臨時故障不中斷整影片，只印警告
                     if frame_count % 100 == 0:
                         print(f"⚠️ analyze_interaction 跳過 (Frame {frame_count}): {_ia_err}")
+            child_is_pointing_hit = last_child_is_pointing_hit  # 🌟 沿用快取結果（YOLO_SKIP 跳幀時保持穩定）
             _t_interaction += _time.perf_counter() - _t0  # 計時：Interaction 段結束
 
             # ──────────────────────────────────────────────
-            # 3. 視線估計
+            # 3. 視線估計（推論用乾淨 frame，結果快取防閃爍）
             # ──────────────────────────────────────────────
-            gaze_result               = None
             child_is_gazing_at        = False
             child_is_gazing_at_tester = False
             face_result_for_fsm       = None
@@ -379,91 +389,110 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             _t0 = _time.perf_counter()
             if is_in_trigger_window or current_stage in ACTIVE_STAGES:
                 try:
-                    # 🌟 視線跳幀：每 GAZE_SKIP 幀才執行一次 5-stage 視線估計 pipeline
-                    #    TB/TH 判定時間解析度 ≥ 0.1s，2 幀快取延遲（≤66ms）完全在容許範圍
+                    # 🌟 視線跳幀：每 GAZE_SKIP 幀才執行一次推論；其餘幀沿用 last_valid_gaze
                     if frame_count % GAZE_SKIP == 0:
-                        gaze_result = gaze_pipeline.estimate(frame)
-                        last_gaze_result = gaze_result
-                    else:
-                        gaze_result = last_gaze_result
-
-                    if gaze_result and gaze_result.get('success'):
-                        face_bbox    = gaze_result.get('face_bbox')
-                        pitch_rad    = gaze_result['gaze_angles'][0]
-                        yaw_rad      = gaze_result['gaze_angles'][1]
-                        gaze_vector  = gaze_result['gaze_vector']
-                        pitch_deg    = gaze_result['gaze_angles_deg'][0]
-                        yaw_deg      = gaze_result['gaze_angles_deg'][1]
-                        confidence   = gaze_result.get('confidence', 0.0)
-                        left_eye     = gaze_result.get('left_eye')
-                        right_eye    = gaze_result.get('right_eye')
-
-                        if face_bbox is not None:
-                            frame = draw_gaze_with_face_box(
-                                frame, face_bbox, pitch_rad, yaw_rad,
-                                gaze_vector=gaze_vector, left_eye=left_eye, right_eye=right_eye,
-                                confidence=confidence, show_angles=True,
-                                show_direction_label=False, show_gaze_vector=True, bbox_format='xyxy'
-                            )
-
-                        # Ray casting：視線是否命中目標物
-                        if current_stage in ACTIVE_STAGES and len(yolo_boxes) > 0:
-                            child_is_gazing_at = check_gaze_on_objects(gaze_result, yolo_boxes)
-                            if child_is_gazing_at:
-                                for box in yolo_boxes:
-                                    if is_gazing_at_box(gaze_result, box):
-                                        cv2.rectangle(frame,
-                                                       (int(box[0]), int(box[1])),
-                                                       (int(box[2]), int(box[3])),
-                                                       (0, 255, 255), 5)
-                                        cv2.putText(frame, "GAZING!",
-                                                    (int(box[0]), int(box[1]) - 15),
-                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
-                        # TH 判定：Stage 9-10 看回機器人；Stage 6-8 看回施測者
-                        if current_stage >= 9:
-                            if len(robot_boxes) > 0:
-                                child_is_gazing_at_tester = check_gaze_on_objects(gaze_result, robot_boxes)
-                                if child_is_gazing_at_tester:
-                                    for box in robot_boxes:
-                                        if is_gazing_at_box(gaze_result, box):
-                                            cv2.rectangle(frame,
-                                                           (int(box[0]), int(box[1])),
-                                                           (int(box[2]), int(box[3])),
-                                                           (0, 0, 255), 4)
-                                            cv2.putText(frame, "GAZING AT ROBOT (TH)!",
-                                                        (int(box[0]), int(box[1]) - 35),
-                                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        _cur_gaze = gaze_pipeline.estimate(frame)  # 推論用乾淨 frame
+                        if _cur_gaze and _cur_gaze.get('success'):
+                            # 🌟 成功：更新快取，歸零計數器
+                            last_valid_gaze = _cur_gaze
+                            gaze_fallback_counter = 0
+                        elif _cur_gaze:
+                            # 🌟 失敗（YOLO 有頭但 MediaPipe 失效）：計數超限才清空快取
+                            gaze_fallback_counter += 1
+                            if gaze_fallback_counter > MAX_GAZE_FALLBACK:
+                                last_valid_gaze = None
+                            if 'face_result' in _cur_gaze:
+                                face_result_for_fsm = _cur_gaze['face_result']
                         else:
-                            # Stage 6, 7, 8：TH 目標為左方施測者區
-                            if is_gazing_at_box(gaze_result, TESTER_ZONE_BBOX):
-                                if pitch_deg > -5 and yaw_deg > 10:
-                                    child_is_gazing_at_tester = True
-                                    cv2.rectangle(frame,
-                                                   (TESTER_ZONE_BBOX[0], TESTER_ZONE_BBOX[1]),
-                                                   (TESTER_ZONE_BBOX[2], TESTER_ZONE_BBOX[3]),
-                                                   (0, 0, 0), 3)
-                                    cv2.putText(frame, "GAZING AT TESTER!",
-                                                (TESTER_ZONE_BBOX[0] + 250, TESTER_ZONE_BBOX[1] + 30),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
-
-                        face_result_for_fsm = {
-                            'yolo_head_bbox': gaze_result.get('yolo_head_bbox'),
-                            'num_landmarks':  gaze_result.get('num_landmarks', 468)
-                        }
-                        pose_result_for_fsm = {
-                            'success': True,
-                            'euler_angles': gaze_result.get('head_pose')
-                        }
-
-                    elif gaze_result and 'face_result' in gaze_result:
-                        face_result_for_fsm = gaze_result['face_result']
-                        pose_result_for_fsm = None
-
+                            gaze_fallback_counter += 1
+                            if gaze_fallback_counter > MAX_GAZE_FALLBACK:
+                                last_valid_gaze = None
                 except Exception as e:
                     if frame_count % 100 == 0:
                         print(f"⚠️ 視線估計跳過 (Frame {frame_count}): {e}")
             _t_gaze += _time.perf_counter() - _t0  # 計時：Gaze 段結束
+
+            # 🌟 使用快取結果（防閃爍）：gaze 短暫失敗時保持上一幀的箭頭與判定
+            active_gaze = last_valid_gaze
+
+            if active_gaze and active_gaze.get('success'):
+                pitch_deg = active_gaze['gaze_angles_deg'][0]
+                yaw_deg   = active_gaze['gaze_angles_deg'][1]
+
+                # ─── 射線碰撞判定（純計算，不繪圖）───
+                if current_stage in ACTIVE_STAGES and len(yolo_boxes) > 0:
+                    child_is_gazing_at = check_gaze_on_objects(active_gaze, yolo_boxes)
+
+                # ─── TH 判定（純計算）───
+                if current_stage >= 9:
+                    if len(robot_boxes) > 0:
+                        child_is_gazing_at_tester = check_gaze_on_objects(active_gaze, robot_boxes)
+                else:
+                    if is_gazing_at_box(active_gaze, TESTER_ZONE_BBOX):
+                        if pitch_deg > -5 and yaw_deg > 10:
+                            child_is_gazing_at_tester = True
+
+                # ─── FSM 資料封裝 ───
+                face_result_for_fsm = {
+                    'yolo_head_bbox': active_gaze.get('yolo_head_bbox'),
+                    'num_landmarks':  active_gaze.get('num_landmarks', 468)
+                }
+                pose_result_for_fsm = {
+                    'success': True,
+                    'euler_angles': active_gaze.get('head_pose')
+                }
+
+            # ==================================================
+            # 🎨 繪圖區：視線箭頭、命中框（全畫在 display_frame）
+            # ==================================================
+            if active_gaze and active_gaze.get('success'):
+                face_bbox   = active_gaze.get('face_bbox')
+                pitch_rad   = active_gaze['gaze_angles'][0]
+                yaw_rad     = active_gaze['gaze_angles'][1]
+                gaze_vector = active_gaze['gaze_vector']
+                left_eye    = active_gaze.get('left_eye')
+                right_eye   = active_gaze.get('right_eye')
+                confidence  = active_gaze.get('confidence', 0.0)
+
+                if face_bbox is not None:
+                    display_frame = draw_gaze_with_face_box(
+                        display_frame, face_bbox, pitch_rad, yaw_rad,
+                        gaze_vector=gaze_vector, left_eye=left_eye, right_eye=right_eye,
+                        confidence=confidence, show_angles=True,
+                        show_direction_label=False, show_gaze_vector=True, bbox_format='xyxy'
+                    )
+
+                # 命中物體標記（GAZING!）
+                if child_is_gazing_at:
+                    for box in yolo_boxes:
+                        if is_gazing_at_box(active_gaze, box):
+                            cv2.rectangle(display_frame,
+                                           (int(box[0]), int(box[1])),
+                                           (int(box[2]), int(box[3])),
+                                           (0, 255, 255), 5)
+                            cv2.putText(display_frame, "GAZING!",
+                                        (int(box[0]), int(box[1]) - 15),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+                # TH 視覺化
+                if current_stage >= 9 and child_is_gazing_at_tester:
+                    for box in robot_boxes:
+                        if is_gazing_at_box(active_gaze, box):
+                            cv2.rectangle(display_frame,
+                                           (int(box[0]), int(box[1])),
+                                           (int(box[2]), int(box[3])),
+                                           (0, 0, 255), 4)
+                            cv2.putText(display_frame, "GAZING AT ROBOT (TH)!",
+                                        (int(box[0]), int(box[1]) - 35),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                elif current_stage < 9 and child_is_gazing_at_tester:
+                    cv2.rectangle(display_frame,
+                                   (TESTER_ZONE_BBOX[0], TESTER_ZONE_BBOX[1]),
+                                   (TESTER_ZONE_BBOX[2], TESTER_ZONE_BBOX[3]),
+                                   (0, 0, 0), 3)
+                    cv2.putText(display_frame, "GAZING AT TESTER!",
+                                (TESTER_ZONE_BBOX[0] + 250, TESTER_ZONE_BBOX[1] + 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
 
             # 時序狀態機更新
             try:
@@ -479,18 +508,18 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     child_is_gazing_at = True
                 if face_result_for_fsm is not None and face_result_for_fsm.get('yolo_head_bbox') is not None:
                     x1, y1, x2, y2 = map(int, face_result_for_fsm['yolo_head_bbox'])
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
-                    cv2.putText(frame, "YOLO Head Only",
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+                    cv2.putText(display_frame, "YOLO Head Only",
                                 (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
             # ──────────────────────────────────────────────
             # 4. 評分更新
             # ──────────────────────────────────────────────
             tester_gaze_angles = None
-            if gaze_result and gaze_result.get('success'):
+            if active_gaze and active_gaze.get('success'):
                 tester_gaze_angles = (
-                    gaze_result['gaze_angles_deg'][0],
-                    gaze_result['gaze_angles_deg'][1],
+                    active_gaze['gaze_angles_deg'][0],
+                    active_gaze['gaze_angles_deg'][1],
                 )
 
             try:
@@ -501,7 +530,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     child_is_pointing_hit=child_is_pointing_hit,
                     child_is_gazing_at=child_is_gazing_at,
                     child_is_gazing_at_tester=child_is_gazing_at_tester,
-                    gaze_result=gaze_result,
+                    gaze_result=active_gaze,
                     robot_rays=[],
                     robot_boxes=robot_boxes,
                     yolo_boxes=yolo_boxes,
@@ -518,41 +547,41 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             c_text   = (0, 255, 255)
             c_key    = (0, 255, 0)    if is_in_trigger_window               else (150, 150, 150)
             c_hit    = (0, 255, 0)    if child_is_pointing_hit               else (0, 0, 255)
-            c_gaze   = (0, 255, 0)    if gaze_result and gaze_result.get('success') else (150, 150, 150)
+            c_gaze   = (0, 255, 0)    if active_gaze and active_gaze.get('success') else (150, 150, 150)
             c_gazing = (0, 255, 255)  if child_is_gazing_at                  else (0, 0, 255)
 
-            cv2.putText(frame,
+            cv2.putText(display_frame,
                         f"Time: {current_time_sec:.1f}s  |  {video_basename}",
                         (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, c_text, 2)
-            cv2.putText(frame,
+            cv2.putText(display_frame,
                         f"Stage: {current_stage}  [Measuring: 1-10]",
                         (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_text, 2)
-            cv2.putText(frame,
+            cv2.putText(display_frame,
                         f"Keyword: {'YES (Active)' if is_in_trigger_window else 'NO (Idle)'}",
                         (15, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_key, 2)
-            cv2.putText(frame,
+            cv2.putText(display_frame,
                         f"Pointing Hit: {'YES!' if child_is_pointing_hit else 'NO'}",
                         (15, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_hit, 2)
 
-            if gaze_result and gaze_result.get('success'):
-                p = gaze_result['gaze_angles_deg'][0]
-                y = gaze_result['gaze_angles_deg'][1]
-                cv2.putText(frame, f"Gaze: P={p:.1f} Y={y:.1f}",
+            if active_gaze and active_gaze.get('success'):
+                p = active_gaze['gaze_angles_deg'][0]
+                y = active_gaze['gaze_angles_deg'][1]
+                cv2.putText(display_frame, f"Gaze: P={p:.1f} Y={y:.1f}",
                             (15, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_gaze, 2)
             else:
                 status_str = (f"Gaze: Blind ({fsm.current_state})"
                               if fsm.current_state == "EXTREME_TURNING" else "Gaze: N/A")
-                cv2.putText(frame, status_str,
+                cv2.putText(display_frame, status_str,
                             (15, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
-            cv2.putText(frame,
+            cv2.putText(display_frame,
                         f"Gazing At Object: {'YES!' if child_is_gazing_at else 'NO'}",
                         (15, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_gazing, 2)
 
             score_text = (f"Score {scoring.total_score} | "
                           f"S{current_stage} Hit {scoring.stage_gazing_counts.get(current_stage, 0)} | "
                           f"Total {scoring.total_gazing_events}")
-            cv2.putText(frame, score_text,
+            cv2.putText(display_frame, score_text,
                         (15, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.7, c_text, 2)
 
             # 🌟 修正：用本幀差值（而非累積量）計算 Other 耗時，避免 _t_other 變負數
@@ -561,7 +590,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                         - (_t_interaction - _prev_interact) - (_t_gaze - _prev_gaze)
 
             try:
-                out.write(frame)
+                out.write(display_frame)
             except Exception as _wr_err:
                 if frame_count % 100 == 0:
                     print(f"⚠️ out.write 失敗 (Frame {frame_count}): {_wr_err}")
@@ -586,7 +615,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             #   2. 每 2 幀才刷新一次預覽（output 影片仍逐幀寫入，評分不受影響）
             #   3. waitKey 移入 SHOW_PREVIEW 區塊（關閉預覽時不做阻塞呼叫）
             if SHOW_PREVIEW and frame_count % 2 == 0:
-                preview_frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_NEAREST)
+                preview_frame = cv2.resize(display_frame, (1280, 720), interpolation=cv2.INTER_NEAREST)
                 cv2.imshow(win_name, preview_frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):

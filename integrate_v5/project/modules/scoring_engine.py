@@ -117,6 +117,18 @@ def create_trigger_record(label, stage, t0, end_time, tb_mode, th_mode):
         "_last_tb_time": -999.0,
         "_last_th_time": -999.0,
         "_last_pointing_time": -999.0,
+        # ============================================================
+        # 🌟 新增：交替計次狀態
+        # 記錄「上一次成功計次的目標」："object"（物品）或 "head"（人/機器人）。
+        # 規則：
+        #   - TB 只有在 _last_counted_target != "object" 時才能計
+        #     （初始 None 可計第一次；之後必須先看過人才可再計）
+        #   - TH 只有在 _last_counted_target == "object" 時才能計
+        #     （必須先看過物品才可計；之後必須再看回物品才可再計）
+        # 效果：視線停留在同一目標上不管多久、或視線移開又回到
+        # 同一目標，都只算一次；只有「物品↔人」真正交替才會累加。
+        # ============================================================
+        "_last_counted_target": None,
         "closed": False
     }
 
@@ -412,10 +424,14 @@ class ScoringEngine:
             record["_prev_pointing"] = child_is_pointing_hit
 
             # --- TB ---
-            # 🌟 上升邊緣 + 冷卻：防止 YOLO 掉偵測造成同一次注視被重複計算
+            # 🌟 修改：交替計次 + 上升邊緣 + 冷卻
+            # 交替條件：上一次計次的目標不能是物品。
+            # → 持續看物品不管多久只算一次；視線移開又看回物品也不再計；
+            #   必須先轉頭看人（計了 TH）之後，再看回物品才算 TB 第二次。
             tb_hit = child_is_gazing_at if record["tb_mode"] == "object" else False
             if record["tb_mode"] is not None and tb_hit and not record["_prev_tb"]:
-                if time_sec - record["_last_tb_time"] > TB_COOLDOWN_SEC:
+                tb_alternation_ok = (record["_last_counted_target"] != "object")
+                if tb_alternation_ok and time_sec - record["_last_tb_time"] > TB_COOLDOWN_SEC:
                     if record["tb"] is None:
                         record["tb"] = time_sec
                         record["tb_count"] = 1
@@ -424,11 +440,17 @@ class ScoringEngine:
                         record["tb_count"] += 1
                         self.event_logs.append("[" + str(round(time_sec,1)) + "s] TB#" + str(record["tb_count"]) + ": " + record["label"])
                     record["_last_tb_time"] = time_sec
+                    record["_last_counted_target"] = "object"  # 🌟 下一次計次必須是 TH（看人）
             record["_prev_tb"] = tb_hit
 
             # --- TH ---
             # 需先達成 TB（若此 Stage 有 TB 條件）
-            # 🌟 上升邊緣 + 冷卻：防止視線偵測閃爍造成重複計數
+            # 🌟 修改：交替計次 + 上升邊緣 + 冷卻
+            # 交替條件（有 TB 目標的階段）：上一次計次的目標必須是物品。
+            # → 持續看人不管多久只算一次；視線移開又看回人也不再計；
+            #   必須先看回物品（計了 TB）之後，再轉頭看人才算 TH 第二次。
+            # 無 TB 目標的階段（如 Stage 8 怪聲）沒有物品可交替，
+            # 維持原本上升邊緣 + 冷卻的判定。
             th_allowed = record["tb_mode"] is None or record["tb"] is not None
             th_hit = False
             if th_allowed:
@@ -437,7 +459,8 @@ class ScoringEngine:
                 elif record["th_mode"] == "robot_box":
                     th_hit = any(is_gazing_at_box_func(gaze_result, box) for box in robot_boxes)
             if th_allowed and th_hit and not record["_prev_th"]:
-                if time_sec - record["_last_th_time"] > TH_COOLDOWN_SEC:
+                th_alternation_ok = (record["tb_mode"] is None) or (record["_last_counted_target"] == "object")
+                if th_alternation_ok and time_sec - record["_last_th_time"] > TH_COOLDOWN_SEC:
                     if record["th"] is None:
                         record["th"] = time_sec
                         record["th_count"] = 1
@@ -446,6 +469,7 @@ class ScoringEngine:
                         record["th_count"] += 1
                         self.event_logs.append("[" + str(round(time_sec,1)) + "s] TH#" + str(record["th_count"]) + ": " + record["label"])
                     record["_last_th_time"] = time_sec
+                    record["_last_counted_target"] = "head"  # 🌟 下一次計次必須是 TB（看回物品）
             record["_prev_th"] = th_hit
 
     def _update_gazing_score(self, time_sec, current_stage, child_is_gazing_at):
@@ -514,6 +538,7 @@ class ScoringEngine:
             f.write("=== T0 / Pointing / TB / TH Detail ===\n")
             f.write("  First-occurrence = timestamp; Count = total (incl. first)\n")
             f.write("  Cooldowns: TB/TH=" + str(TB_COOLDOWN_SEC) + "s, Pointing=" + str(POINTING_COOLDOWN_SEC) + "s\n")
+            f.write("  Counting rule: TB/TH alternation (gaze must switch object<->head to count again)\n")
             f.write("=" * 40 + "\n")
             ordered_records = sorted(self.trigger_event_records, key=lambda r: r.get("t0", 0.0))
             for idx, r in enumerate(ordered_records, 1):

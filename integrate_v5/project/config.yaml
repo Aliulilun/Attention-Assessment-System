@@ -1,8 +1,8 @@
 # ==================== 視線估計配置 ====================
 gaze_estimation:
   face_detection:
-    min_confidence: 0.3
-    yolo_conf: 0.4
+    min_confidence: 0.7
+    yolo_conf: 0.7
     yolo_model_path: "model/gaze/nano.pt"
     face_landmarker_task: "model/gaze/face_landmarker.task"
     crop_padding_ratio: 0.2
