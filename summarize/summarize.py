@@ -8,8 +8,8 @@ def parse_gaze_log(file_path):
     """
     解析單一 txt 檔案的視線追蹤紀錄。
     涵蓋 Stage 1~10，包含：
-    1. 特徵擷取順序調整：將反應等級移至該 Stage 欄位的最後面。
-    2. 次級事件回溯 (Fallback Mechanism) 處理 TH#2。
+    1. 特徵擴充與重新排序：於反應等級前加入 'total分數'。
+    2. 次級事件回溯 (Fallback Mechanism) 處理 TH#2 碰撞。
     """
     vid = file_path.stem
     text = file_path.read_text(encoding='utf-8')
@@ -22,33 +22,35 @@ def parse_gaze_log(file_path):
     summary_text = parts[0]
     event_log_text = parts[1] if len(parts) > 1 else ""
 
-    # 定義 Stage Schema (將反應等級移至陣列最尾端)
+    # 定義 Stage Schema (新增 total分數，置於反應等級之前)
     stages_schema = {
-        1:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', '反應等級'],
-        2:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', '反應等級'],
-        3:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', '反應等級'],
-        4:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', '反應等級'],
-        5:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', '反應等級'],
-        6:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', '反應等級'],
-        7:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', '反應等級'],
-        8:  ['T0', 'TH', 'TH次數', '反應等級'], 
-        9:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', '反應等級'],
-        10: ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', '反應等級']
+        1:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        2:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        3:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        4:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        5:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        6:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        7:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        8:  ['T0', 'TH', 'TH次數', 'total分數', '反應等級'], 
+        9:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        10: ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級']
     }
     
     row_data = {'影片編號': vid, '狀態': '完成'}
     
     for stage, cols in stages_schema.items():
-        # 初始化預設值
-        level, t0, tb, th = 'x', 'x', 'x', 'x'
+        # 變數初始化，設定預設空值為 'x'
+        level, total_score, t0, tb, th = 'x', 'x', 'x', 'x', 'x'
         pt_cnt, tb_cnt, th_cnt = 0, 0, 0
         
-        # 尋找該 Stage 的區塊與反應等級擷取
-        block_pattern = rf"Stage\s+{stage}\s+--.*?反應等級\s+([A-Za-z]+).*?(?=Stage\s+\d+\s+--|={40}|$)"
+        # 更新後的正則表達式：同時捕獲等級 (group 1) 與分數 (group 2)
+        # 範例匹配: 反應等級 LR(1分)
+        block_pattern = rf"Stage\s+{stage}\s+--.*?反應等級\s+([A-Za-z]+)\s*\((\d+)分?\).*?(?=Stage\s+\d+\s+--|={40}|$)"
         match = re.search(block_pattern, summary_text, re.DOTALL)
         
         if match:
-            level = match.group(1)
+            level = match.group(1)       # 提取英文字母，如 LR, LI, HI
+            total_score = match.group(2) # 提取數字，如 1, 2, 3
             block = match.group(0)
             
             t0_m = re.search(r'T0\s*=\s*(.*?)\n', block)
@@ -80,7 +82,9 @@ def parse_gaze_log(file_path):
                     cnt_m = re.search(r'x(\d+)', val)
                     if cnt_m: pt_cnt = int(cnt_m.group(1))
 
-        # 次級事件回溯邏輯 (處理時間碰撞)
+        # ----------------------------------------------------
+        # 次級事件回溯邏輯 (Fallback Mechanism)
+        # ----------------------------------------------------
         stage_log_pattern = rf"Stage change -> {stage}\b(.*?)(?=Stage change ->|$)"
         collision = False
         
@@ -101,9 +105,9 @@ def parse_gaze_log(file_path):
                 if th2_m:
                     th = th2_m.group(1) + 's'
 
-        # ========================================================
-        # 將解析結果映射至字典 (Python 3.7+ 將嚴格依照此賦值順序建立 DataFrame 的行向量)
-        # ========================================================
+        # ----------------------------------------------------
+        # 特徵映射與記憶體指派 (嚴格遵守 Schema 定義的排序)
+        # ----------------------------------------------------
         if stage != 8:
             row_data[f'Stage{stage}_T0'] = t0
             row_data[f'Stage{stage}_TB'] = tb
@@ -111,17 +115,19 @@ def parse_gaze_log(file_path):
             row_data[f'Stage{stage}_Pointing次數'] = pt_cnt
             row_data[f'Stage{stage}_TB次數'] = tb_cnt
             row_data[f'Stage{stage}_TH次數'] = th_cnt
-            row_data[f'Stage{stage}_反應等級'] = level   # 移至最後一位
+            row_data[f'Stage{stage}_total分數'] = total_score # 依序插入分數
+            row_data[f'Stage{stage}_反應等級'] = level       # 最後插入等級
         else: # Stage 8
             row_data[f'Stage{stage}_T0'] = t0
             row_data[f'Stage{stage}_TH'] = th
             row_data[f'Stage{stage}_TH次數'] = th_cnt
-            row_data[f'Stage{stage}_反應等級'] = level   # 移至最後一位
+            row_data[f'Stage{stage}_total分數'] = total_score
+            row_data[f'Stage{stage}_反應等級'] = level
             
     return row_data
 
 def main():
-    parser = argparse.ArgumentParser(description="批次處理 Gaze Tracking 的所有 txt 檔案 (Schema欄位重新排序版)")
+    parser = argparse.ArgumentParser(description="批次處理 Gaze Tracking txt 檔案 (含分數萃取與欄位重排)")
     parser.add_argument('-d', '--dir', type=str, default=None, help="指定包含 txt 檔案的資料夾路徑")
     args = parser.parse_args()
 
@@ -158,7 +164,7 @@ def main():
             
     df = pd.DataFrame(all_rows)
     
-    # 數值排序過濾器
+    # 強制將編號轉為數值以進行穩定排序 (Stable Sort)
     def extract_numeric_key(series):
         return series.apply(
             lambda x: int(re.search(r'\d+', str(x)).group()) if re.search(r'\d+', str(x)) else float('inf')
