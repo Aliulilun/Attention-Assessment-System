@@ -88,7 +88,7 @@ MUSIC_CONTEXT_KEYWORDS = {
 }
 
 # 【第 15 版：合併組員 noise.wav 樣本比對修正 + 幻覺片段過濾】
-MATCHING_ALGORITHM_VERSION = 15
+MATCHING_ALGORITHM_VERSION = 16  # 🌟 v16：幻覺過濾強化 + logprob 門檻恢復 + 怪聲時序合理性選擇
 
 
 @dataclass
@@ -331,9 +331,55 @@ def is_prompt_echo(normalized_segment_text: str) -> bool:
     match = matcher.find_longest_match(
         0, len(normalized_segment_text), 0, len(_NORMALIZED_INITIAL_PROMPT)
     )
-    if match.size < PROMPT_ECHO_MIN_MATCH_LEN:
-        return False
-    return (match.size / len(normalized_segment_text)) >= PROMPT_ECHO_MIN_RATIO
+    if match.size >= PROMPT_ECHO_MIN_MATCH_LEN and \
+            (match.size / len(normalized_segment_text)) >= PROMPT_ECHO_MIN_RATIO:
+        return True
+
+    # ============================================================
+    # 🌟 新增（heuristic 2）：prompt 片段「覆蓋率」檢查
+    # 實際觀察到的幻覺是「混搭型」：把 prompt 的多個片段拼接重複，
+    # 例：「請勿忽略短促的聲音：看這裡、看這裡、看這裡…」。
+    # 最長連續重疊只佔片段 3 成，過不了上面的比例門檻。
+    # 改用貪婪比對：計算片段中「屬於 prompt 任一長度>=3 子字串」的
+    # 字元覆蓋率，>= 0.8 即視為幻覺。真實語句混有小孩名字、語助詞等
+    # prompt 外字元，覆蓋率通常遠低於 0.8。
+    # ============================================================
+    text = normalized_segment_text
+    covered = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        best = 0
+        max_try = min(n - i, len(_NORMALIZED_INITIAL_PROMPT))
+        for L in range(max_try, 2, -1):
+            if text[i:i+L] in _NORMALIZED_INITIAL_PROMPT:
+                best = L
+                break
+        if best > 0:
+            covered += best
+            i += best
+        else:
+            i += 1
+    if n >= PROMPT_ECHO_MIN_MATCH_LEN and (covered / n) >= 0.8:
+        return True
+
+    # ============================================================
+    # 🌟 新增（heuristic 3）：短語高頻重複檢查
+    # 幻覺的另一特徵是同一短語連續跳針（「看這裡、看這裡、看這裡…」）。
+    # 若某個 2~4 字的短語出現 >= 4 次、且其總字數佔片段一半以上，
+    # 視為幻覺。真實對話中同一短語極少連續唸四次以上。
+    # ============================================================
+    if n >= 12:
+        for L in (2, 3, 4):
+            counts = {}
+            for j in range(n - L + 1):
+                sub = text[j:j+L]
+                counts[sub] = counts.get(sub, 0) + 1
+            for sub, cnt in counts.items():
+                if cnt >= 4 and (cnt * L) / n >= 0.5:
+                    return True
+
+    return False
 
 
 def format_mmss(seconds: float) -> str:
@@ -972,15 +1018,47 @@ def select_alarm_noise_events(
         >= config.noise_template_similarity_min
     ]
     if template_events:
+        # ============================================================
+        # 🌟 新增：時序合理性優先
+        # 測驗流程中怪聲（Stage 8）必然發生在「機器人畫畫」（Stage 9）
+        # 之前。若逐字稿有「畫」的提及，優先從第一次提及之前的候選中
+        # 挑相似度最高者；全都在其後才退回全域最佳。
+        # 修正案例：86 影片真怪聲在 ~150s，但全域最高分是 271s 的
+        # 誤匹配（已在畫畫階段之後），舊邏輯選錯導致 Stage 8 漏記。
+        # ============================================================
+        draw_times = []
+        for rec in segment_records:
+            rec_text = rec.get("text", "")
+            if is_prompt_echo(normalize_text(rec_text)):
+                continue
+            if "畫" in rec_text or "画" in rec_text:
+                try:
+                    draw_times.append(float(rec.get("start")))
+                except (TypeError, ValueError):
+                    continue
+        first_draw_t = min(draw_times) if draw_times else None
+
+        pool = template_events
+        if first_draw_t is not None:
+            pre_draw = [
+                e for e in template_events
+                if float(e.get("raw_start", e.get("start", 0.0))) < first_draw_t
+            ]
+            if pre_draw:
+                pool = pre_draw
+
         best_event = max(
-            template_events,
+            pool,
             key=lambda event: (
                 float(event.get("template_similarity", -1.0)),
                 float(event.get("score", 0.0)),
                 float(event.get("peak_score", 0.0)),
             ),
         )
-        best_event["selection_reason"] = "best_reference_sample_similarity"
+        best_event["selection_reason"] = (
+            "best_similarity_before_drawing_stage"
+            if pool is not template_events else "best_reference_sample_similarity"
+        )
         return [best_event]
 
     fallback_template_events = [
@@ -1090,7 +1168,11 @@ def transcribe_with_whisper(config: SpeechConfig) -> Dict[str, Any]:
         temperature=0.0,
         condition_on_previous_text=False,
         no_speech_threshold=0.3,
-        logprob_threshold=-2.0,
+        # 🌟 修改：-2.0 → -1.0（Whisper 預設值）
+        # -2.0 過度寬鬆，幾乎不過濾低信心片段，是 86 影片前 60 秒
+        # 幻覺（prompt 複誦）大量進入逐字稿的主因之一。
+        # 幻覺片段的平均 logprob 通常很低，恢復預設即可在源頭擋掉大半。
+        logprob_threshold=-1.0,
         word_timestamps=True,
         compression_ratio_threshold=2.4,
         fp16=False,

@@ -3,7 +3,7 @@ import json
 import subprocess
 import sys
 
-EXPECTED_MATCHING_ALGORITHM_VERSION = 15
+EXPECTED_MATCHING_ALGORITHM_VERSION = 16  # 🌟 v16：幻覺過濾強化 + logprob 門檻恢復 + 怪聲時序合理性選擇
 
 class SpeechTrigger:
     def __init__(self, video_path, output_dir, keywords, noise_sample_path=None):
@@ -46,6 +46,32 @@ class SpeechTrigger:
         else:
             print(">>> [SpeechTrigger] 無怪聲觸發時間窗（noise.wav 未命中或未提供）")
 
+    @staticmethod
+    def _filter_hallucination_windows(windows, records):
+        """
+        🌟 新增：過濾 Whisper 幻覺產生的假觸發時間窗。
+        Whisper 聽不清時會把 initial_prompt 複誦回來（「請勿忽略短促的聲音：
+        看這裡…」），這些段落配對出的關鍵字時間窗全是假的，
+        會讓 is_in_trigger_window 長時間為 True、卡住階段切換鎖。
+        做法：時間窗起點若落在任何幻覺段落的時間範圍內，捨棄該窗。
+        """
+        markers = ["請勿忽略", "短促的聲音"]
+        bad_spans = []
+        for rec in records:
+            if any(m in rec.get("text", "") for m in markers):
+                try:
+                    bad_spans.append((float(rec["start"]) - 0.1, float(rec["end"]) + 0.1))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        if not bad_spans:
+            return windows
+        kept = [w for w in windows
+                if not any(s <= float(w[0]) <= e for s, e in bad_spans)]
+        dropped = len(windows) - len(kept)
+        if dropped:
+            print(f">>> [SpeechTrigger] 過濾 {dropped} 個 Whisper 幻覺假時間窗")
+        return kept
+
     def get_trigger_windows(self):
         """
         利用獨立行程 (Subprocess) 啟動語音大腦，徹底避免記憶體崩潰。
@@ -70,7 +96,7 @@ class SpeechTrigger:
                 self.transcript_dict = {rec['start']: rec['text'] for rec in records}
                 # 🌟 新增：讀取怪聲觸發時間窗
                 self._load_noise_trigger_windows(data)
-                windows = data.get("trigger_windows", [])
+                windows = self._filter_hallucination_windows(data.get("trigger_windows", []), records)
                 return [(float(w[0]), float(w[1])) for w in windows]
             except ValueError:
                 pass
@@ -121,8 +147,8 @@ class SpeechTrigger:
             # 🌟 新增：讀取怪聲觸發時間窗
             self._load_noise_trigger_windows(data)
 
-            # 讀取並回傳時間窗
-            windows = data.get("trigger_windows", [])
+            # 讀取並回傳時間窗（過濾 Whisper 幻覺假窗）
+            windows = self._filter_hallucination_windows(data.get("trigger_windows", []), records)
             return [(float(w[0]), float(w[1])) for w in windows]
         else:
             print("⚠️ [SpeechTrigger] 找不到語音快取檔。")

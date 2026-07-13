@@ -53,10 +53,9 @@ SCORING_VERSION = 'HURRY_1to10_BATCH_V1'
 # ★ 跳幀設定（效能優化）
 # 說明：EasyOCR / 視線估計 / YOLO 不需要每幀都跑，
 #       被量測目標（閃卡、機器人）移動緩慢，快取上一幀結果可大幅提速。
-YOLO_SKIP = 1   # 🌟 修改：改為逐幀執行（不跳幀），確保 TB/TH 時間點精確
-GAZE_SKIP = 1   # 🌟 修改：改為逐幀執行（不跳幀），確保視線偵測無延遲
-OCR_SKIP  = 15  # 覆寫 SignboardTracker 的 OCR_FRAME_INTERVAL（預設 2 → 改 15）
-                # 牌子在畫面靜止數秒，每 0.5s 偵測一次即可
+YOLO_SKIP = 1
+GAZE_SKIP = 1
+OCR_SKIP  = 5   # 🌟 核心修正 1：將 15 改為 5。降低 Tracker 防抖累積的延遲，防止吃掉語音空窗期
 
 # ★ 怪聲參考音檔（放在 model/ 目錄，跨所有影片共用）
 # 🌟 修改：speech.py 新增 noise_sample_path 參數，此處明確傳入固定路徑；
@@ -66,19 +65,20 @@ NOISE_SAMPLE_PATH = os.path.normpath(
 )
 # 等同於 C:\project\model\noisesample\noise.wav
 
+# 🌟 修改：關鍵字清單精簡——只保留 1-10 階段偵測/計分實際會用到的詞。
+# 對照程式消費點（scoring_engine._update_trigger_records / _build_absolute_timeline /
+# _update_gazing_score）：
+#   你看、看這裡  → Stage 1-4 的 T0 觸發 + 計分時間窗 + Stage 9 結束偵測
+#   畫、画        → Stage 9 起點（子字串同時涵蓋「畫一幅」「畫好了」等）
+#   煙火、烟火、321、三二一、三 → Stage 10 起點（煙火倒數）
+# 已移除：開始/準備/準備囉/小朋友/機器人/放煙火 等——1-10 版沒有任何
+# 邏輯讀取這些詞，只會多產生無用的觸發時間窗干擾階段鎖。
+# 怪聲（Stage 8）由 noise.wav 模板比對負責，不走關鍵字。
 SPEECH_KEYWORDS = [
-    "開始", "321", "三二一", "準備", "你看", "小朋友", "看這裡", "準備囉",
-    # 🌟 修改：移除 "怪聲", "嗶", "逼", "[聲音]"
-    #          這些是「聲音符號」而非口說詞語，Whisper 遇到怪聲時會自行寫入 [聲音]，
-    #          留在 SPEECH_KEYWORDS 裡會讓 Whisper 的音效記錄被當關鍵字觸發時間窗。
-    #          怪聲觸發改由 noise.wav 模板比對（is_in_noise_window）負責。
-    "機器人", "放煙火", "煙火", "放烟火", "烟火",
-    "三", "畫一幅", "画一幅", "画1幅", "畫", "画", "畫好了", "画好了", "特別的畫"
+    "你看", "看這裡",
+    "畫", "画",
+    "煙火", "烟火", "321", "三二一", "三",
 ]
-
-# 🌟 修改：怪聲觸發（Stage 7→8）改為純 noise.wav 模板比對，
-#          此清單保留「機器人」（口說詞語，仍需 Whisper 偵測）供其他覆寫邏輯使用
-WEIRD_SOUND_TRIGGERS = ["機器人"]
 
 
 # ============================================================
@@ -115,6 +115,15 @@ def check_gaze_on_objects(gaze_result, yolo_boxes):
         if is_gazing_at_box(gaze_result, box):
             return True
     return False
+
+def expand_box(box, ratio=0.10):
+    """🌟 新增：命中測試用的框外擴（與根目錄 main.py 同步的防閃爍修正）。
+    YOLO 框每幀會抖動、視線射線擦框緣時會一幀中一幀不中，
+    外擴 10% 給判定留容差（只影響命中測試，不影響畫面上的框）。"""
+    x1, y1, x2, y2 = box
+    mx = (x2 - x1) * ratio
+    my = (y2 - y1) * ratio
+    return (x1 - mx, y1 - my, x2 + mx, y2 + my)
 
 
 # ============================================================
@@ -218,6 +227,23 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
     gaze_fallback_counter = 0     # 連續失敗幀數計數器
     MAX_GAZE_FALLBACK = 5         # 超過此值才清空 last_valid_gaze（防閃爍）
 
+    # ==================================================
+    # 🌟 新增：視線「命中判定」防閃爍三件套（與根目錄 main.py 同步）
+    # 根因：判定是逐幀原始射線相交，視線向量每幀抖動幾度 +
+    #       YOLO 框抖動/掉偵測，射線擦框緣時就一幀中一幀不中。
+    # 1. gaze_ray_history：對眼睛中心與視線向量做 5 幀滑動平均
+    # 2. GAZE_BOX_MARGIN：命中測試時物品框外擴 10% 容差
+    # 3. GAZE_HIT_HOLD_FRAMES：命中遲滯——立即亮起、
+    #    連續 10 幀（約 0.33s）沒命中才熄滅，橋接短暫漏判
+    # （宣告在 process_single_video 內 → 每支影片自動重置，批次安全）
+    # ==================================================
+    from collections import deque as _deque
+    gaze_ray_history = _deque(maxlen=5)   # (left_eye, right_eye, gaze_vector)
+    GAZE_BOX_MARGIN = 0.10
+    GAZE_HIT_HOLD_FRAMES = 10
+    gaze_obj_hold = 0     # 看物品的遲滯倒數
+    gaze_tester_hold = 0  # 看人/機器人的遲滯倒數
+
     # 🌟 計時診斷（每 TIMING_REPORT_INTERVAL 幀印一次各段耗時，協助找瓶頸）
     import time as _time
     TIMING_REPORT_INTERVAL = 50
@@ -247,21 +273,22 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             _prev_interact = _t_interaction; _prev_gaze = _t_gaze
 
             # ──────────────────────────────────────────────
-            # 1. 階段判定
+            # 1. 階段判定 (加入空窗期鎖定 & 順序防護機制)
             # ──────────────────────────────────────────────
 
-            # A. OCR（只識別牌子 6 和 7）
+            pending_stage = current_stage  # 準備要切換的目標階段
+
+            # A. OCR 判定
             _t0 = _time.perf_counter()
             if current_stage < 8:
                 try:
                     detected_stage = sign_tracker.detect_stage(frame)
-                    if detected_stage is not None and detected_stage <= 7:
+                    # 🌟 核心修正 2：防時光倒流 (Anti-Rollback)
+                    # 加入 current_stage <= detected_stage，防止背景雜訊讓階段退回前面的關卡
+                    if detected_stage is not None and current_stage <= detected_stage <= 7:
                         if detected_stage != current_stage:
-                            scoring.handle_stage_change(current_stage, detected_stage, current_time_sec)
-                            current_stage = detected_stage
+                            pending_stage = detected_stage  # 先記錄新階段，暫不切換
                 except RuntimeError as _ocr_err:
-                    # 🌟 EasyOCR CUDA OOM 安全捕捉：不中斷幀迴圈，跳過本幀 OCR
-                    #    若為 OOM，主動清 VRAM cache 後繼續（下幀 OCR 可能恢復）
                     _msg = str(_ocr_err)
                     if 'out of memory' in _msg.lower() or 'cuda' in _msg.lower():
                         if frame_count % 100 == 0:
@@ -276,22 +303,39 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                         print(f"⚠️ OCR 跳過 (Frame {frame_count}): {_ocr_err}")
 
             # B. 時間軸自動推進（只推進到 ACTIVE_STAGES 內的階段）
-            expected_stage = current_stage
             if hasattr(scoring, 'stage_start_times'):
                 for s_idx in sorted(scoring.stage_start_times.keys()):
                     if current_time_sec >= scoring.stage_start_times[s_idx]:
-                        if s_idx > expected_stage:
-                            expected_stage = s_idx
+                        if s_idx > pending_stage:
+                            pending_stage = s_idx  # 記錄時間軸推進的新階段
 
-            if expected_stage > current_stage and expected_stage in ACTIVE_STAGES:
-                print(f">>> [時間軸] {current_time_sec:.1f}s 推進至第 {expected_stage} 階段")
-                scoring.handle_stage_change(current_stage, expected_stage, current_time_sec)
-                current_stage = expected_stage
+            # 🌟 核心修正 3： Trigger Lock 空窗期鎖
+            # 只要在語音有效期限內，絕不強制切換階段，確保小孩作答能被記錄！
+            # 🌟 修正：語音/怪聲驅動的階段（8、9、10）不受鎖延後。
+            # 這些階段的 T0 就是關鍵字/怪聲本身，而關鍵字一出現必然開啟
+            # 語音空窗期 → 鎖住切換 → 9/10 階段關鍵字密集、空窗期一個接
+            # 一個 → 切換被無限延後，看起來就是「有關鍵字卻不切換也不記錄」。
+            # 鎖只保留給 OCR 牌子驅動的 1-7 階段（保護小孩作答期間不被硬切）。
+            if pending_stage > current_stage and pending_stage in ACTIVE_STAGES:
+                voice_driven = pending_stage >= 8
+                if is_in_trigger_window and not voice_driven:
+                    if frame_count % 15 == 0:
+                        print(f">>> [鎖定] {current_time_sec:.1f}s 正在語音空窗期內，延後切換至階段 {pending_stage}")
+                else:
+                    print(f">>> [時間軸] {current_time_sec:.1f}s 推進至第 {pending_stage} 階段")
+                    scoring.handle_stage_change(current_stage, pending_stage, current_time_sec)
+                    current_stage = pending_stage
+                    # 🌟 新增：語音驅動階段（8/9/10）同步 tracker 顯示，
+                    # 讓畫面上的「Sign:N」與左上角 Stage 一致（純顯示同步，
+                    # tracker 在 stage>=8 本來就不再跑 OCR，不影響判定）
+                    if current_stage >= 8:
+                        sign_tracker.force_stage(current_stage)
 
             # C. 聽覺代償（Stage 7 → 8）
-            # 🌟 修改：怪聲觸發改為 noise.wav 模板比對命中（is_in_noise_window），
-            #          不再依賴 Whisper 關鍵字（[聲音]/嗶/逼），避免 Whisper 音效符號誤觸發
-            if current_stage == 7:
+            # 🌟 核心修正 4：解除順序死鎖
+            # 將 if current_stage == 7 改為 if current_stage < 8
+            # 萬一施測者漏了前面的牌子，聽到怪聲依舊能強制推進到 8，保護後續 9 與 10 不消失
+            if current_stage < 8:
                 is_override = speech.is_in_noise_window(current_time_sec)
                 if is_override:
                     print(f">>> [Voice Override] {current_time_sec:.1f}s noise.wav 命中，切換至階段 8")
@@ -401,12 +445,14 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                             gaze_fallback_counter += 1
                             if gaze_fallback_counter > MAX_GAZE_FALLBACK:
                                 last_valid_gaze = None
+                                gaze_ray_history.clear()  # 🌟 視線真正丟失：清空平滑歷史
                             if 'face_result' in _cur_gaze:
                                 face_result_for_fsm = _cur_gaze['face_result']
                         else:
                             gaze_fallback_counter += 1
                             if gaze_fallback_counter > MAX_GAZE_FALLBACK:
                                 last_valid_gaze = None
+                                gaze_ray_history.clear()  # 🌟 同上
                 except Exception as e:
                     if frame_count % 100 == 0:
                         print(f"⚠️ 視線估計跳過 (Frame {frame_count}): {e}")
@@ -415,22 +461,47 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             # 🌟 使用快取結果（防閃爍）：gaze 短暫失敗時保持上一幀的箭頭與判定
             active_gaze = last_valid_gaze
 
+            raw_gaze_obj = False       # 🌟 本幀原始命中（平滑射線 + 容差框）
+            raw_gaze_tester = False
+            gazed_obj_boxes = []       # 🌟 本幀被注視的物品框（供繪圖用）
+            gazed_robot_boxes = []
+            smoothed_gaze = active_gaze
+
             if active_gaze and active_gaze.get('success'):
                 pitch_deg = active_gaze['gaze_angles_deg'][0]
                 yaw_deg   = active_gaze['gaze_angles_deg'][1]
 
-                # ─── 射線碰撞判定（純計算，不繪圖）───
+                # ─── 🌟 視線射線 5 幀滑動平均（消除逐幀角度抖動）───
+                _le = active_gaze.get('left_eye')
+                _re = active_gaze.get('right_eye')
+                _gv = active_gaze.get('gaze_vector')
+                if _le is not None and _re is not None and _gv is not None:
+                    gaze_ray_history.append((np.array(_le, dtype=float),
+                                             np.array(_re, dtype=float),
+                                             np.array(_gv, dtype=float)))
+                if len(gaze_ray_history) > 0:
+                    smoothed_gaze = dict(active_gaze)
+                    smoothed_gaze['left_eye']    = tuple(np.mean([h[0] for h in gaze_ray_history], axis=0))
+                    smoothed_gaze['right_eye']   = tuple(np.mean([h[1] for h in gaze_ray_history], axis=0))
+                    smoothed_gaze['gaze_vector'] = tuple(np.mean([h[2] for h in gaze_ray_history], axis=0))
+
+                # ─── 射線碰撞判定（平滑射線 + 外擴容差框）───
                 if current_stage in ACTIVE_STAGES and len(yolo_boxes) > 0:
-                    child_is_gazing_at = check_gaze_on_objects(active_gaze, yolo_boxes)
+                    for box in yolo_boxes:
+                        if is_gazing_at_box(smoothed_gaze, expand_box(box, GAZE_BOX_MARGIN)):
+                            gazed_obj_boxes.append(box)
+                    raw_gaze_obj = len(gazed_obj_boxes) > 0
 
                 # ─── TH 判定（純計算）───
                 if current_stage >= 9:
-                    if len(robot_boxes) > 0:
-                        child_is_gazing_at_tester = check_gaze_on_objects(active_gaze, robot_boxes)
+                    for box in robot_boxes:
+                        if is_gazing_at_box(smoothed_gaze, expand_box(box, GAZE_BOX_MARGIN)):
+                            gazed_robot_boxes.append(box)
+                    raw_gaze_tester = len(gazed_robot_boxes) > 0
                 else:
-                    if is_gazing_at_box(active_gaze, TESTER_ZONE_BBOX):
+                    if is_gazing_at_box(smoothed_gaze, TESTER_ZONE_BBOX):
                         if pitch_deg > -5 and yaw_deg > 10:
-                            child_is_gazing_at_tester = True
+                            raw_gaze_tester = True
 
                 # ─── FSM 資料封裝 ───
                 face_result_for_fsm = {
@@ -441,6 +512,26 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     'success': True,
                     'euler_angles': active_gaze.get('head_pose')
                 }
+
+            # ==================================================
+            # 🌟 命中遲滯：立即亮起、延遲熄滅
+            # 射線擦框緣或 YOLO 短暫掉框造成的單幀漏判會被橋接，
+            # 只有連續 GAZE_HIT_HOLD_FRAMES 幀真的沒命中才判定移開視線。
+            # 開始時間不延遲 → TB/TH 反應時間（RT）不受影響。
+            # ==================================================
+            if raw_gaze_obj:
+                gaze_obj_hold = GAZE_HIT_HOLD_FRAMES
+                child_is_gazing_at = True
+            elif gaze_obj_hold > 0:
+                gaze_obj_hold -= 1
+                child_is_gazing_at = True
+
+            if raw_gaze_tester:
+                gaze_tester_hold = GAZE_HIT_HOLD_FRAMES
+                child_is_gazing_at_tester = True
+            elif gaze_tester_hold > 0:
+                gaze_tester_hold -= 1
+                child_is_gazing_at_tester = True
 
             # ==================================================
             # 🎨 繪圖區：視線箭頭、命中框（全畫在 display_frame）
@@ -463,28 +554,28 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     )
 
                 # 命中物體標記（GAZING!）
+                # 🌟 修改：改用判定區算好的 gazed_obj_boxes（平滑射線 + 容差框），
+                # 與指示燈完全同步，不再重複做原始射線測試造成畫面閃爍
                 if child_is_gazing_at:
-                    for box in yolo_boxes:
-                        if is_gazing_at_box(active_gaze, box):
-                            cv2.rectangle(display_frame,
-                                           (int(box[0]), int(box[1])),
-                                           (int(box[2]), int(box[3])),
-                                           (0, 255, 255), 5)
-                            cv2.putText(display_frame, "GAZING!",
-                                        (int(box[0]), int(box[1]) - 15),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    for box in gazed_obj_boxes:
+                        cv2.rectangle(display_frame,
+                                       (int(box[0]), int(box[1])),
+                                       (int(box[2]), int(box[3])),
+                                       (0, 255, 255), 5)
+                        cv2.putText(display_frame, "GAZING!",
+                                    (int(box[0]), int(box[1]) - 15),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
                 # TH 視覺化
                 if current_stage >= 9 and child_is_gazing_at_tester:
-                    for box in robot_boxes:
-                        if is_gazing_at_box(active_gaze, box):
-                            cv2.rectangle(display_frame,
-                                           (int(box[0]), int(box[1])),
-                                           (int(box[2]), int(box[3])),
-                                           (0, 0, 255), 4)
-                            cv2.putText(display_frame, "GAZING AT ROBOT (TH)!",
-                                        (int(box[0]), int(box[1]) - 35),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    for box in gazed_robot_boxes:
+                        cv2.rectangle(display_frame,
+                                       (int(box[0]), int(box[1])),
+                                       (int(box[2]), int(box[3])),
+                                       (0, 0, 255), 4)
+                        cv2.putText(display_frame, "GAZING AT ROBOT (TH)!",
+                                    (int(box[0]), int(box[1]) - 35),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 elif current_stage < 9 and child_is_gazing_at_tester:
                     cv2.rectangle(display_frame,
                                    (TESTER_ZONE_BBOX[0], TESTER_ZONE_BBOX[1]),
@@ -534,7 +625,9 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     robot_rays=[],
                     robot_boxes=robot_boxes,
                     yolo_boxes=yolo_boxes,
-                    is_gazing_at_box_func=is_gazing_at_box,
+                    # 🌟 修改：計分引擎的 TH(robot_box) 原本用原始 is_gazing_at_box 重算，
+                    # 會繞過平滑與遲滯、再度閃爍。改為直接回傳主迴圈已穩定的判定結果。
+                    is_gazing_at_box_func=lambda _gaze, _box: child_is_gazing_at_tester,
                     tester_gaze_angles=tester_gaze_angles,
                 )
             except Exception as _sc_err:
@@ -654,8 +747,11 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                         _t0  = _rec.get('start', 0.0)
                         _t1  = _rec.get('end',   0.0)
                         _txt = _rec.get('text', '').strip()
-                        # 🌟 修改：keywords 在 trigger_events 層，不在 segment_record 層
-                        _kws = [k for ev in _rec.get('trigger_events', []) for k in ev.get('keywords', [])]
+                        # 🌟 核心修正 5：適應新版 json 扁平結構，讓 txt 報告能正確印出關鍵字
+                        # （相容處理：扁平層讀不到時退回 trigger_events 層，新舊快取都能印）
+                        _kws = _rec.get('keywords', [])
+                        if not _kws:
+                            _kws = [k for ev in _rec.get('trigger_events', []) for k in ev.get('keywords', [])]
                         _line = f"[{_t0:.2f}s ~ {_t1:.2f}s]  {_txt}"
                         if _kws:
                             _line += f"  ← 關鍵字：{', '.join(dict.fromkeys(_kws))}"  # fromkeys 去重保序

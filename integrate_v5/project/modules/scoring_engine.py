@@ -11,6 +11,24 @@ TB_COOLDOWN_SEC      = 1.5   # TB 兩次計次之間的最小間隔（秒）
 TH_COOLDOWN_SEC      = 1.5   # TH 兩次計次之間的最小間隔（秒）
 POINTING_COOLDOWN_SEC = 0.8  # Pointing 兩次計次之間的最小間隔（秒）
 
+# ==========================================
+# 🌟 新增：Whisper 幻覺過濾標記
+# Whisper 遇到聽不清的片段時，會把 initial_prompt 逐字複誦回來
+# （例：「請勿忽略短促的聲音：看這裡、看這裡…」），
+# 這種段落的關鍵字全是假的：會產生假觸發事件與假空窗期，
+# 干擾 T0 建立與 Trigger Lock。文字含以下標記的段落一律略過。
+# ==========================================
+HALLUCINATION_MARKERS = ["請勿忽略", "短促的聲音"]
+
+# 🌟 新增：Stage 1-4 OCR 代償 T0 的等待秒數
+# 進入階段後等待「你看/看這裡」關鍵字這麼多秒，等不到就以
+# 階段進入時間代償建立 T0（Whisper 幻覺/漏轉錄的影片才需要）。
+FALLBACK_T0_DELAY_SEC = 4.0
+
+
+def is_hallucinated_text(text):
+    return any(m in (text or "") for m in HALLUCINATION_MARKERS)
+
 
 def load_keyword_trigger_windows_from_cache(cache_path, target_keywords=("你看", "畫一幅畫")):
     if not os.path.exists(cache_path):
@@ -22,6 +40,8 @@ def load_keyword_trigger_windows_from_cache(cache_path, target_keywords=("你看
         return []
     windows = []
     for record in data.get("segment_records", []):
+        if is_hallucinated_text(record.get("text", "")):
+            continue  # 🌟 略過 Whisper 幻覺段落
         for event in record.get("trigger_events", []):
             if not any(k in event.get("keywords", []) for k in target_keywords):
                 continue
@@ -43,6 +63,8 @@ def load_speech_events_from_cache(cache_path):
     events = []
     for record in data.get("segment_records", []):
         text = record.get("text", "")
+        if is_hallucinated_text(text):
+            continue  # 🌟 略過 Whisper 幻覺段落（假關鍵字、假時間窗）
         for event in record.get("trigger_events", []):
             try:
                 start_time = float(event.get("start"))
@@ -205,23 +227,33 @@ class ScoringEngine:
             self.stage_start_times[8] = t8
             
         # Stage 9: 畫畫關鍵字（需在 Stage 8 之後）
-        t9_cands = []
+        # 🌟 修改：加入順序防護回退——若「必須在 Stage 8 之後」的過濾
+        # 把候選全部濾光（例如怪聲偵測時間偏晚、比畫畫關鍵字還後面），
+        # 退回使用未過濾的候選，避免 Stage 9/10 整個消失、不切換也不記錄。
+        t9_all = []
         for e in self.speech_events:
             if any(k in e["text"] for k in ["畫", "画"]):
-                t9_cands.append(e["start"])
-        t9_cands = [t for t in t9_cands if t >= (t8 if t8 < 10**9 else 0)]
+                t9_all.append(e["start"])
+        t9_cands = [t for t in t9_all if t >= (t8 if t8 < 10**9 else 0)]
+        if not t9_cands and t9_all:
+            t9_cands = list(t9_all)  # 🌟 回退：順序過濾撲空時改用全部候選
         t9_cands.append(10**9)
         t9 = min(t9_cands)
         if t9 < 10**9:
             self.stage_start_times[9] = t9
-            
+
         # Stage 10: 煙火/321 倒數（需在 Stage 9 之後）
         t10_base = t9 if t9 < 10**9 else (t8 if t8 < 10**9 else 0)
-        t10_cands = []
+        t10_all = []
         for e in self.speech_events:
             if any(k in e["text"] for k in ["煙火", "烟火", "321", "三二一", "三", "3"]):
-                t10_cands.append(e["start"])
-        t10_cands = [t for t in t10_cands if t >= t10_base]
+                t10_all.append(e["start"])
+        t10_cands = [t for t in t10_all if t >= t10_base]
+        if not t10_cands and t10_all:
+            # 🌟 回退：放寬到「在 Stage 8 之後」即可（不強制在 Stage 9 之後）。
+            # 不完全解除過濾——「三/3」是常見字，全域取 min 會誤抓影片開頭的語音。
+            if t8 < 10**9:
+                t10_cands = [t for t in t10_all if t >= t8]
         t10_cands.append(10**9)
         t10 = min(t10_cands)
         if t10 < 10**9:
@@ -311,12 +343,26 @@ class ScoringEngine:
                 continue
             new_record = None
 
-            if current_stage in [1, 2, 3, 4] and "你看" in event["text"]:
+            # 🌟 修改：Stage 1-4 的 T0 觸發詞增加「看這裡」
+            # 施測者實際用語不只「你看」；幻覺段落已在載入時過濾，安全
+            if current_stage in [1, 2, 3, 4] and ("你看" in event["text"] or "看這裡" in event["text"]):
                 if not already_active:
                     new_record = create_trigger_record(
                         self.stage_names.get(current_stage, "Stage"+str(current_stage)),
                         current_stage, event["start"], 10**9, "object", "tester"
                     )
+                elif event["start"] >= self.current_stage_enter_time - 0.5:
+                    # 🌟 新增：此階段已有「OCR 代償」紀錄且尚未計次
+                    # → 關鍵字補到了，把 t0 升級為關鍵字時間（更精確的 RT 基準）
+                    for r in self.active_trigger_records:
+                        if (r["stage"] == current_stage and not r.get("closed")
+                                and r.get("_t0_source") == "ocr"
+                                and r["tb"] is None and r["th"] is None and r["pointing_t"] is None):
+                            r["t0"] = float(event["start"])
+                            r["_t0_source"] = "keyword"
+                            self.event_logs.append("[" + str(round(time_sec,1)) + "s] T0升級(keyword): " + r["label"] + " -> " + str(round(r["t0"],2)) + "s")
+                            self.processed_speech_event_ids.add(event["id"])
+                            break
 
             elif current_stage == 8 and abs(event["start"] - self.stage_start_times.get(8, -1)) < 0.05:
                 if not already_active:
@@ -362,9 +408,32 @@ class ScoringEngine:
                 self.event_logs.append("[" + str(round(new_record['t0'],1)) + "s] T0: " + new_record['label'])
                 # 🌟 建立後馬上將狀態設為 True，防止在同一個 frame 迴圈內被其他 event 重複觸發
                 already_active = True
-
-            if time_sec > event["end"]:
+                # 🌟 新增：此事件已用於建立 T0，立即作廢——
+                # 防止同一句「你看」在下一個階段又被拿去建紀錄（t0 失真）
                 self.processed_speech_event_ids.add(event["id"])
+
+            # ============================================================
+            # 🌟 修改：事件作廢防護（修「階段認出來了卻沒記錄」）
+            # 舊邏輯：時間一過 event["end"] 就作廢。但 Trigger Lock 會延後
+            # 階段切換，等 current_stage 真的切過去時，該階段的起點關鍵字
+            # 早已被作廢 → T0 永遠建立不了、整關漏記。
+            # 新邏輯：
+            #   1. 事件若是「尚未抵達的階段」的起點（對應 stage_start_times），
+            #      無限保留，直到該階段真正開始、record 建立後才作廢。
+            #   2. 一般「你看」事件（Stage 1-4 用）給 8 秒寬限期，
+            #      涵蓋階段鎖造成的延後切換（t0 仍用事件原始時間，不失真）。
+            # ============================================================
+            if time_sec > event["end"]:
+                keep_alive = False
+                for s, t in self.stage_start_times.items():
+                    if abs(event["start"] - t) < 0.05 and current_stage < s:
+                        keep_alive = True
+                        break
+                if not keep_alive and ("你看" in event.get("text", "") or "看這裡" in event.get("text", "")) \
+                        and time_sec <= event["end"] + 8.0:
+                    keep_alive = True
+                if not keep_alive:
+                    self.processed_speech_event_ids.add(event["id"])
 
         # 雜音 (Stage 8)
         for noise_event in self.noise_events:
@@ -383,8 +452,13 @@ class ScoringEngine:
                     self.event_logs.append("[" + str(round(new_record['t0'],1)) + "s] T0(noise): " + new_record['label'])
                     already_active = True
                     
+            # 🌟 修改：同語音事件——Stage 8 尚未開始前，其起點雜音事件不作廢，
+            # 等切換到 Stage 8、T0 建立後才標記處理，防止延後切換造成漏記
             if time_sec > noise_event["end"]:
-                self.processed_noise_event_ids.add(noise_event["id"])
+                is_pending_s8_start = (abs(noise_event["start"] - self.stage_start_times.get(8, -1)) < 0.05
+                                       and current_stage < 8)
+                if not is_pending_s8_start:
+                    self.processed_noise_event_ids.add(noise_event["id"])
 
         # Stage 5~7: YOLO 偵測到目標物時建立 T0
         if current_stage in [5, 6, 7] and current_stage not in self.created_object_t0_stages and len(yolo_boxes) > 0:
@@ -394,6 +468,25 @@ class ScoringEngine:
             self.trigger_event_records.append(obj_record)
             self.active_trigger_records.append(obj_record)
             self.event_logs.append("[" + str(round(time_sec,1)) + "s] T0(obj): " + lbl)
+            already_active = True
+
+        # ============================================================
+        # 🌟 新增：Stage 1-4 OCR 代償 T0
+        # Whisper 幻覺/漏轉錄導致該階段完全沒有「你看/看這裡」事件時
+        # （例：86 前 60 秒整段是幻覺文字），牌子有翻、階段有進入，
+        # 卻永遠建立不了 T0 → 整關漏記。
+        # 進入階段 FALLBACK_T0_DELAY_SEC 秒後仍無紀錄，改以「階段進入
+        # 時間」代償建立；之後關鍵字若補到，上方升級邏輯會把 t0 修正
+        # 為關鍵字時間。正常影片關鍵字 1-2 秒內就到，不會走到這裡。
+        # ============================================================
+        if (current_stage in [1, 2, 3, 4] and not already_active
+                and time_sec - self.current_stage_enter_time >= FALLBACK_T0_DELAY_SEC):
+            lbl = self.stage_names.get(current_stage, "Stage"+str(current_stage))
+            fb_record = create_trigger_record(lbl, current_stage, self.current_stage_enter_time, 10**9, "object", "tester")
+            fb_record["_t0_source"] = "ocr"
+            self.trigger_event_records.append(fb_record)
+            self.active_trigger_records.append(fb_record)
+            self.event_logs.append("[" + str(round(time_sec,1)) + "s] T0(ocr代償): " + lbl)
             already_active = True
 
         # --------------------------------------------------

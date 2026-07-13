@@ -304,6 +304,20 @@ class InteractionEngine:
     # arm link score 已用 body_scale 正規化（同一手腕約 0.1~0.5），1.0 留有安全邊際。可調。
     CROSS_ZONE_LINK_TH = 1.0
 
+    # 🌟 新增：arm link 歸屬的可信門檻
+    # min_score 超過此值代表這隻手跟「贏家」的手臂連動其實很弱，
+    # 歸屬結果不可信，改走 fallback（身體框包含判定）。
+    # 原本的防呆門檻 1.5 太寬：施測者跨區、手臂被遮擋時，
+    # 兒童以 1.2~1.4 的爛分數「贏了」也照樣被採信 → 假 Child HIT。
+    ARM_LINK_ACCEPT_TH = 1.0
+    # 🌟 新增：fallback 身體框外擴比例（佔框長邊）
+    FALLBACK_BOX_EXPAND = 0.15
+    # 🌟 新增：Child 認領的正向證據門檻
+    # 兩人都在場時，一隻手要被判給 Child，Child 自己的手臂連動分數
+    # 必須 <= 此值（有真實手臂證據）。防止施測者高舉指物的手落在
+    # 兒童身體框內時，被 fallback 的「框包含」邏輯誤判給 Child。
+    CHILD_CLAIM_TH = 1.0
+
     def _is_near_face(self, wrist_px: Tuple[int, int], yolo_people: List[dict]) -> bool:
         """
         檢查 MediaPipe 偵測到的「手腕」是否落在任何人的臉部關鍵點附近。
@@ -562,6 +576,7 @@ class InteractionEngine:
                 wrist_in_tester_zone = (p_wri[0] < DIVIDER_X)
 
                 best_owner, min_score = None, float('inf')
+                owner_scores: Dict[str, float] = {}  # 🌟 新增：各 owner 的最佳手臂連動分數（供 Child 證據檢查）
                 for person in yolo_people:
                     person_in_tester_zone = (person["owner"] == "Tester")
                     is_cross_zone = (wrist_in_tester_zone != person_in_tester_zone)
@@ -580,28 +595,73 @@ class InteractionEngine:
                         if not arm_visible:
                             score = float('inf')  # 手臂不可見，拒絕跨區
 
+                    if score < owner_scores.get(person["owner"], float('inf')):
+                        owner_scores[person["owner"]] = score  # 🌟 記錄各 owner 最佳分數
+
                     if score < min_score:
                         min_score = score
                         best_owner = person["owner"]
 
-                # 防呆：arm link 完全失敗時，用手腕位置決定
-                if min_score > 1.5 or best_owner is None:
-                    if p_wri[0] < DIVIDER_X:
-                        best_owner = "Tester" if tester_present else "Child"
-                    else:
+                # ============================================================
+                # 🌟 修改（防止大人的指向被誤判成小朋友的指向）：
+                # 舊防呆邏輯只看手腕在分界線哪一邊——手腕在兒童區就判 Child。
+                # 施測者側身跨區指物、手臂關鍵點被自己身體遮擋時：
+                #   跨區可見性檢查 → 施測者分數 = inf
+                #   兒童以爛分數勝出或 arm link 全失敗 → 手腕在兒童區 → 誤判 Child
+                #   → 產生假的 Child HIT！
+                # 新邏輯：arm link 不可信時，改看手腕落在誰的「外擴身體框」內：
+                #   - 只落在一人框內 → 歸那個人（施測者前傾時她的大框會涵蓋跨區手）
+                #   - 落在多人框內 → 取身體框中心較近者
+                #   - 誰的框都不包含 → 孤兒手，無法可靠歸屬 → 直接跳過（不標記、不射線）
+                # ============================================================
+                if min_score > self.ARM_LINK_ACCEPT_TH or best_owner is None:
+                    fallback_owner, fallback_dist = None, float('inf')
+                    for person in yolo_people:
+                        bx1, by1, bx2, by2 = person["box"]
+                        m = self.FALLBACK_BOX_EXPAND * max(bx2 - bx1, by2 - by1)
+                        if (bx1 - m) <= p_wri[0] <= (bx2 + m) and (by1 - m) <= p_wri[1] <= (by2 + m):
+                            cx, cy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
+                            d = math.hypot(p_wri[0] - cx, p_wri[1] - cy)
+                            if d < fallback_dist:
+                                fallback_dist, fallback_owner = d, person["owner"]
+                    if fallback_owner is not None:
+                        best_owner = fallback_owner
+                    elif (not child_present) and tester_present and p_wri[0] >= DIVIDER_X:
+                        # 🌟 兒童身體漏偵測補償：單一施測者場景、手在兒童區、
+                        # 與施測者無連動、也不在施測者身體框內 → 極可能是
+                        # YOLO 漏偵測的兒童的手，歸 Child（原補償邏輯移到此處，
+                        # 不再覆蓋 fallback 依身體框做出的 Tester 判定）
                         best_owner = "Child"
+                    else:
+                        continue  # 孤兒手：不指派 owner、不畫骨架、不形成射線
 
                 # 單人場景防呆
+                # 🌟 修改：移除舊的「單一施測者 + 手在兒童區 + 連動弱 → 強制翻 Child」邏輯。
+                # 該邏輯會覆蓋上方 fallback 依身體框做出的 Tester 判定，
+                # 讓「施測者跨區伸手但手臂被遮擋」再度被誤判成 Child。
+                # 兒童身體漏偵測的補償已移至 fallback 的孤兒手分支
+                # （與施測者無連動、也不在其身體框內時，才歸 Child）。
                 if not tester_present and child_present:
                     best_owner = "Child"
-                elif not child_present and tester_present:
-                    # 🌟 修改：只有施測者被偵測到、手腕在兒童區時，需分辨兩種情況，
-                    # 避免把「施測者跨區伸手指物」誤判成不存在的兒童而產生假 child 命中。
-                    if p_wri[0] >= DIVIDER_X:
-                        if min_score <= self.CROSS_ZONE_LINK_TH:
-                            best_owner = "Tester"   # 與施測者手臂強連動 → 施測者跨區伸手
-                        else:
-                            best_owner = "Child"    # 連動弱 → 可能是身體漏偵測的兒童手
+
+                # ============================================================
+                # 🌟 新增（防止施測者高舉的手被誤判給小朋友）：
+                # Child 認領需有「正向手臂證據」。
+                # 情境：施測者指遠物時手高舉、剛好落在兒童身體框內
+                # （兒童雙手放下、沒有在指）→ 手臂連動兩邊都弱 →
+                # fallback 依框包含判給 Child → 假的 Child 射線。
+                # 規則：兩人都在場、手被判給 Child、但 Child 自己的
+                # 手臂連動分數 > CHILD_CLAIM_TH（無真實證據）時：
+                #   - 施測者連動可信 → 改判 Tester
+                #   - 兩邊都沒證據 → 整隻手跳過（不標記、不射線）
+                # 兒童真的指物時手臂會舉起、腕/肘關鍵點可見 → 分數低 → 不受影響
+                # ============================================================
+                if (best_owner == "Child" and tester_present and child_present
+                        and owner_scores.get("Child", float('inf')) > self.CHILD_CLAIM_TH):
+                    if owner_scores.get("Tester", float('inf')) <= self.ARM_LINK_ACCEPT_TH:
+                        best_owner = "Tester"
+                    else:
+                        continue
 
                 # ============================================================
                 # 🌟 新增（問題1）：歸屬時間平滑
