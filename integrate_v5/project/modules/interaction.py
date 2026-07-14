@@ -15,6 +15,7 @@ class LegacyHandLms:
 
 class InteractionEngine:
     WRIST = 0
+    THB_TIP = 4   # 🌟 新增：大拇指指尖（收攏檢查用）
     IDX_MCP = 5
     IDX_PIP = 6
     IDX_TIP = 8
@@ -185,6 +186,21 @@ class InteractionEngine:
         is_mid_folded = dist(mid_tip, wri) < dist(mid_pip, wri) + 0.10 * scale
         is_rng_folded = dist(rng_tip, wri) < dist(rng_pip, wri) + 0.10 * scale
         if not (is_mid_folded and is_rng_folded): return None
+
+        # ============================================================
+        # 🌟 新增：標準指向手勢的完整四指檢查
+        # 有效指向 = 只有食指伸出、「其他四指全部縮起」：
+        # 1. 小指也必須彎曲（原本只檢查中指與無名指）
+        # 2. 大拇指必須收攏貼著拳頭——拇指尖需靠近食指或中指的
+        #    掌指關節（距離 <= 0.6 倍手掌長）。比出「讚」或 L 形
+        #    手勢時拇指外張，距離會遠超此值 → 不形成射線。
+        # ============================================================
+        is_pnk_folded = dist(pnk_tip, wri) < dist(pnk_pip, wri) + 0.10 * scale
+        if not is_pnk_folded: return None
+
+        thb_tip = get_pt(self.THB_TIP)
+        if min(dist(thb_tip, idx_mcp), dist(thb_tip, mid_mcp)) > 0.60 * scale:
+            return None  # 拇指外張：非標準指向手勢
 
         if owner == "Tester":
             dist_idx = dist(idx_tip, idx_mcp)
