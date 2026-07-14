@@ -71,12 +71,13 @@ class InteractionEngine:
             # 導致把臉、衣服紋路都誤判為手。
             num_hands=2,
             running_mode=vision.RunningMode.VIDEO,
-            # 🌟 修改 2：三個信心閾值從 0.1 提高至 0.35
-            # 0.1 太寬鬆，人臉輪廓（鼻樑 + 臉頰）的置信度常介於 0.1~0.3，
-            # 提高至 0.35 後可有效過濾臉部誤判，同時不影響真實手部偵測。
-            min_hand_detection_confidence=0.35,
-            min_hand_presence_confidence=0.35,
-            min_tracking_confidence=0.30
+            # 🌟 修改 3：信心閾值再提高（0.35 → 0.5）
+            # 使用者要求「被遮擋就不要形成射線，要很確認偵測到才形成」。
+            # 手被氣球等物體部分遮擋時，MediaPipe 的偵測/存在信心會下降，
+            # 提高門檻讓不確定的手在源頭就被丟棄，寧可漏偵測不要誤射線。
+            min_hand_detection_confidence=0.50,
+            min_hand_presence_confidence=0.50,
+            min_tracking_confidence=0.40
         )
         self.mp_hands = vision.HandLandmarker.create_from_options(options)
         self.timestamp_ms: int = 0
@@ -138,7 +139,7 @@ class InteractionEngine:
         cv2.circle(frame, start_pt, 6, (255, 255, 255), -1)
         cv2.circle(frame, start_pt, 9, color, 2)
 
-    def is_valid_pointing(self, landmarks: LegacyHandLms, frame_w: int, frame_h: int, owner: str) -> Optional[float]:
+    def is_valid_pointing(self, landmarks: LegacyHandLms, frame_w: int, frame_h: int, owner: str, frame: Optional[np.ndarray] = None) -> Optional[float]:
         def get_pt(idx: int) -> np.ndarray:
             return np.array([landmarks.landmark[idx].x * frame_w, landmarks.landmark[idx].y * frame_h])
 
@@ -221,6 +222,33 @@ class InteractionEngine:
         # 🌟 新增（問題3）：食指本身必須打直（PIP 彎曲角 ≤ 45°）。
         # 手鬆放桌上、食指微彎垂下時角度會超標，不形成射線。
         if idx_angle > 45: return None
+
+        # ============================================================
+        # 🌟 新增：食指「實體驗證」（抓 MediaPipe 幻覺手指）
+        # 鬆握拳、手被氣球等物體遮擋時，MediaPipe 會幻想出一根伸直的
+        # 食指——關鍵點是錯的，上面所有幾何檢查都會通過。
+        # 驗證方式：真手指的 PIP→TIP 連線像素必是皮膚色；
+        # 幻覺手指的連線落在牆面/物體上，皮膚色比例趨近 0 → 拒絕。
+        # ============================================================
+        if frame is not None:
+            if self._finger_pixels_skin_ratio(frame, idx_pip, idx_tip,
+                                              self.FINGER_SKIN_SAMPLES) < self.FINGER_SKIN_MIN_RATIO:
+                return None
+
+            # ============================================================
+            # 🌟 新增：手背關節實體驗證（被遮擋就不形成射線）
+            # 四個掌指關節（食/中/無名/小指根部）取樣皮膚色，
+            # 至少 KNUCKLE_MIN_SKIN 個是皮膚才視為「手清楚可見」。
+            # 手被氣球/物品遮擋時，關節位置取樣到的是遮擋物顏色
+            # → 不夠確認 → 拒絕形成射線。
+            # ============================================================
+            knuckle_skin = sum(
+                1 for kp in [idx_mcp, mid_mcp, rng_mcp, pnk_mcp]
+                if self._point_is_skin(frame, kp[0], kp[1])
+            )
+            if knuckle_skin < self.KNUCKLE_MIN_SKIN:
+                return None
+
         return idx_angle
 
     @staticmethod
@@ -269,6 +297,59 @@ class InteractionEngine:
                  ((x1, y2), (x1+length, y2)), ((x1, y2), (x1, y2-length)),
                  ((x2, y2), (x2-length, y2)), ((x2, y2), (x2, y2-length))]
         for pt_a, pt_b in lines: cv2.line(img, pt_a, pt_b, color, thickness)
+
+    # 🌟 新增：食指「實體驗證」參數
+    # 沿食指 PIP→TIP 連線取樣的點數，與判定為真手指所需的皮膚色比例
+    # 🌟 修改：0.5 → 0.7（要很確認偵測到才形成射線）
+    FINGER_SKIN_SAMPLES = 8
+    FINGER_SKIN_MIN_RATIO = 0.7
+    # 🌟 新增：手背關節實體驗證——四個掌指關節（食/中/無名/小指根部）
+    # 中至少要有幾個取樣到皮膚色。手被氣球等物體遮擋時，
+    # 關節位置取樣到的是遮擋物顏色 → 拒絕形成射線。
+    KNUCKLE_MIN_SKIN = 3
+
+    @staticmethod
+    def _point_is_skin(frame: np.ndarray, px: float, py: float) -> bool:
+        """🌟 新增：檢查座標附近 5×5 區域是否含皮膚色像素（>= 20%）。"""
+        h, w = frame.shape[:2]
+        x, y = int(px), int(py)
+        if not (0 <= x < w and 0 <= y < h):
+            return False
+        patch = frame[max(0, y-2):y+3, max(0, x-2):x+3]
+        if patch.size == 0:
+            return False
+        ycrcb = cv2.cvtColor(patch, cv2.COLOR_BGR2YCrCb)
+        mask = cv2.inRange(ycrcb, (0, 133, 77), (255, 173, 127))
+        return (np.count_nonzero(mask) / mask.size) >= 0.2
+
+    @staticmethod
+    def _finger_pixels_skin_ratio(frame: np.ndarray, p_start: np.ndarray, p_end: np.ndarray, samples: int = 8) -> float:
+        """
+        🌟 新增：食指實體驗證——檢查 PIP→TIP 連線上的像素是否為皮膚色。
+        MediaPipe 在鬆握拳、手被物體遮擋時會「幻想」出一根伸直的食指，
+        關鍵點幾何檢查全部會過，但幻覺手指的連線落在背景（牆面/物體）上。
+        真手指 → 連線像素是皮膚色；幻覺 → 是背景色，直接識破。
+        取樣範圍取 10%~70%（避開指尖端的視覺化圓點與 MCP 根部陰影）。
+        """
+        h, w = frame.shape[:2]
+        ok, total = 0, 0
+        for i in range(samples):
+            t = 0.10 + 0.60 * (i + 0.5) / samples
+            x = int(p_start[0] + (p_end[0] - p_start[0]) * t)
+            y = int(p_start[1] + (p_end[1] - p_start[1]) * t)
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            patch = frame[max(0, y-2):y+3, max(0, x-2):x+3]
+            if patch.size == 0:
+                continue
+            ycrcb = cv2.cvtColor(patch, cv2.COLOR_BGR2YCrCb)
+            mask = cv2.inRange(ycrcb, (0, 133, 77), (255, 173, 127))
+            total += 1
+            if np.count_nonzero(mask) / mask.size >= 0.2:
+                ok += 1
+        if total == 0:
+            return 1.0  # 完全無法取樣（畫面邊緣）：不擋，交由其他檢查
+        return ok / total
 
     @staticmethod
     def _robust_average_vector(vectors: List[np.ndarray], max_deviation_deg: float = 25.0) -> np.ndarray:
@@ -760,7 +841,7 @@ class InteractionEngine:
 
                 hand_lms = LegacyHandLms(hand_landmarks_list)
 
-                idx_angle = self.is_valid_pointing(hand_lms, FRAME_W, FRAME_H, best_owner)
+                idx_angle = self.is_valid_pointing(hand_lms, FRAME_W, FRAME_H, best_owner, frame=frame)
                 if idx_angle is None:
                     continue
 
