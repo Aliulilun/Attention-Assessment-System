@@ -50,7 +50,7 @@ OUTPUT_DIR  = os.path.join(BASE_DIR, 'output')
 CONFIG_PATH = os.path.join(PROJECT_DIR, 'config.yaml')    # 使用原始專案的 config
 
 ACTIVE_STAGES   = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}   # ★ 量測第 1-10 階段
-SHOW_PREVIEW    = True                 # ★ False = 關閉預覽視窗（批次加速，省 I/O）
+SHOW_PREVIEW    = False                # ★ False = 關閉預覽視窗（批次加速，省 I/O）
 SCORING_VERSION = 'HURRY_1to10_BATCH_V1'
 
 # ★ 跳幀設定（效能優化）
