@@ -180,7 +180,12 @@ def main():
     sign_tracker.reader.readtext(dummy_img) 
 
     # 模型大腦：負責自動切換各階段的各式模型
-    model_manager = ModelManager(model_dir=MODEL_DIR)
+    # 🌟 修改：傳入 Stage5 氣球彩度過濾門檻（config.yaml 的 object_detection 區塊）
+    _obj_cfg = CONFIG.get('object_detection', {}) if isinstance(CONFIG, dict) else {}
+    model_manager = ModelManager(
+        model_dir=MODEL_DIR,
+        stage5_min_colorful_ratio=_obj_cfg.get('stage5_min_colorful_ratio', 0.12),
+    )
     pose_path = os.path.join(MODEL_DIR, 'yolo11n-pose.pt')
     hand_path = os.path.join(MODEL_DIR, 'gaze', 'hand_landmarker.task')
     interaction = InteractionEngine(pose_model_path=pose_path, hand_model_path=hand_path, sma_window=5)
@@ -389,8 +394,13 @@ def main():
                     #    骨架/射線畫在 display_frame 上，不污染 frame 供後續推論使用。
                     child_is_pointing_hit = interaction.analyze_interaction(display_frame, yolo_boxes)
             except Exception as e:
-                if frame_count % 100 == 0: 
+                if frame_count % 100 == 0:
                     print(f"⚠️ 偵測跳過 (Frame {frame_count}): {e}")
+
+            # 🌟 新增：Stage 8 指向特規——怪聲題沒有目標物，
+            # 小朋友的指向射線存在即算 Pointing（不需指中物品）
+            if current_stage == 8 and interaction.last_child_pointing_active:
+                child_is_pointing_hit = True
 
             # ==================================================
             # 3. 👁️ 視線估計（推論用乾淨 frame，結果快取防閃爍）

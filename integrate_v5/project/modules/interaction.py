@@ -80,6 +80,9 @@ class InteractionEngine:
         )
         self.mp_hands = vision.HandLandmarker.create_from_options(options)
         self.timestamp_ms: int = 0
+        # 🌟 新增：本幀「小朋友指向射線是否存在」（不看有沒有指中物品）
+        # Stage 8（怪聲）的指向計分只需要射線存在即可，由 main 讀取此屬性
+        self.last_child_pointing_active: bool = False
         self._ts_base: int = 0  # 🌟 新增：批次模式跨影片 elapsed_ms 基準偏移
 
         self.C_CHILD: Tuple[int, int, int] = (0, 255, 0)
@@ -478,6 +481,7 @@ class InteractionEngine:
             "Tester": deque(maxlen=self.ray_angle_history["Tester"].maxlen),
         }
         self.hand_owner_tracks = []  # 🌟 新增：跨影片清空手部歸屬追蹤器
+        self.last_child_pointing_active = False  # 🌟 新增：跨影片重置
         print(">>> [InteractionEngine] tracking 狀態已重置")
 
     def analyze_interaction(self, frame: np.ndarray, yolo_boxes: List[Tuple[float, float, float, float]], elapsed_ms: Optional[int] = None) -> bool:
@@ -540,11 +544,36 @@ class InteractionEngine:
                 body_scale = self.estimate_body_scale(kpts, confs, boxes_all[i])
                 yolo_people.append({"owner": owner, "box": boxes_all[i], "kpts": kpts, "confs": confs, "scale": body_scale})
 
+            # ============================================================
+            # 🌟 新增（防止大人的手被判成小朋友的手）：幽靈人物去重
+            # YOLO-Pose 有時會把「伸長的手臂」誤偵測成第二個人，
+            # 其中心點落在兒童區 → 被標成第二個 Child →
+            # 施測者的手與這個幽靈 Child 連動最強 → 誤判成小朋友的手。
+            # 真人與幽靈的差異：真人有清晰的頭部關鍵點（鼻/眼/耳）。
+            # 場景中最多一位施測者＋一位兒童，每個 owner 只保留
+            # 「頭部關鍵點信心總和最高（同分取框面積大者）」的一位，
+            # 其餘視為幽靈偵測，不畫框、不參與手部歸屬。
+            # ============================================================
+            if len(yolo_people) > 1:
+                best_by_owner = {}
+                for person in yolo_people:
+                    head_conf = float(np.sum(person["confs"][0:5]))
+                    bx = person["box"]
+                    area = float((bx[2] - bx[0]) * (bx[3] - bx[1]))
+                    rank = (head_conf, area)
+                    key = person["owner"]
+                    if key not in best_by_owner or rank > best_by_owner[key][0]:
+                        best_by_owner[key] = (rank, person)
+                yolo_people = [v[1] for v in best_by_owner.values()]
+
+            # 存在旗標與繪製（只針對去重後的真人）
+            for person in yolo_people:
+                owner = person["owner"]
                 if owner == "Tester": tester_present = True
                 if owner == "Child": child_present = True
 
                 color = self.C_TESTER if owner == "Tester" else self.C_CHILD
-                bx1, by1, bx2, by2 = map(int, boxes_all[i])
+                bx1, by1, bx2, by2 = map(int, person["box"])
                 cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2)
                 cv2.putText(frame, f"Body: {owner}", (bx1, by1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
@@ -775,6 +804,12 @@ class InteractionEngine:
 
             if self.dwell_counters[owner] >= self.DWELL_FRAMES and self.hold_counters[owner] > 0:
                 pointing_owners.add(owner)
+
+        # 🌟 新增：記錄「小朋友指向射線存在」訊號（與是否指中物品無關）
+        # 供 Stage 8 等「只要有指的動作就計分」的關卡使用
+        self.last_child_pointing_active = (
+            "Child" in pointing_owners and len(self.ray_history["Child"]["vector"]) > 0
+        )
 
         for owner in ["Tester", "Child"]:
             if owner in pointing_owners and len(self.ray_history[owner]["vector"]) > 0:

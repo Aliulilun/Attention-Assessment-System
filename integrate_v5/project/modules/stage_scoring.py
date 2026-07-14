@@ -37,6 +37,22 @@ def compute_stage_score(record):
     pointing_score = 1 if record.get("pointing_t") is not None else 0
     total = tb_score + th_score + pointing_score
 
+    # ============================================================
+    # 🌟 新增：Stage 8（手機怪聲）特規等級判定
+    # 此題指向不需指中物品（射線存在即計），等級規則：
+    #   出現指向（手指）→ HI
+    #   僅偵測到 TH（轉頭看人）→ LI
+    #   皆無 → F
+    # ============================================================
+    if record.get("stage") == 8:
+        if pointing_score:
+            level = "HI"
+        elif th_score:
+            level = "LI"
+        else:
+            level = "F"
+        return total, level
+
     if total == 0:
         level = "F"
     elif total == 1:

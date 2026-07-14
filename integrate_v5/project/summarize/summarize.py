@@ -31,7 +31,7 @@ def parse_gaze_log(file_path):
         5:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
         6:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
         7:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
-        8:  ['T0', 'TH', 'TH次數', 'total分數', '反應等級'], 
+        8:  ['T0', 'TH', 'Pointing次數', 'TH次數', 'total分數', '反應等級'],  # 🌟 修改：Stage 8 指向特規（射線存在即計），加入 Pointing 次數欄
         9:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
         10: ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級']
     }
@@ -127,6 +127,7 @@ def parse_gaze_log(file_path):
         else: # Stage 8
             row_data[f'Stage{stage}_T0'] = t0
             row_data[f'Stage{stage}_TH'] = th
+            row_data[f'Stage{stage}_Pointing次數'] = pt_cnt  # 🌟 新增：指向次數（射線存在即計）
             row_data[f'Stage{stage}_TH次數'] = th_cnt
             row_data[f'Stage{stage}_total分數'] = total_score
             row_data[f'Stage{stage}_反應等級'] = level

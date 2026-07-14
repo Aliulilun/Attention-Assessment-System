@@ -5,10 +5,19 @@ import numpy as np
 from ultralytics import YOLO
 
 class ModelManager:
-    def __init__(self, model_dir):
+    def __init__(self, model_dir, stage5_min_colorful_ratio=0.12):
         print(">>> [ModelManager] 初始化階段適應性物件偵測器...")
         self.model_dir = model_dir
         self.models = {}
+        # 🌟 新增：Stage 5 氣球「彩度過濾」門檻（0 = 停用）
+        # 氣球誤判常落在白袍衣袖、牆面等低彩度區域；要求框內至少有
+        # 此比例的鮮豔像素才視為氣球。白色/透明氣球的場次請在
+        # config.yaml 將 stage5_min_colorful_ratio 設為 0 停用此過濾。
+        self.stage5_min_colorful_ratio = float(stage5_min_colorful_ratio)
+        if self.stage5_min_colorful_ratio > 0:
+            print(f">>> [ModelManager] Stage5 氣球彩度過濾：啟用（門檻 {self.stage5_min_colorful_ratio}）")
+        else:
+            print(">>> [ModelManager] Stage5 氣球彩度過濾：停用")
 
         # ==========================================
         # 🌟 硬體優化邏輯
@@ -38,6 +47,25 @@ class ModelManager:
             13: "background_model.pt",  # ✅ 新增：第 13~14 階段 (背景物品)
             14: "background_model.pt"
         }
+
+    @staticmethod
+    def _colorful_ratio(frame, box):
+        """
+        🌟 新增：計算框內「鮮豔色」像素比例（HSV：飽和度高且不過暗）。
+        用途：氣球通常是鮮豔色；白袍衣袖、牆面等誤判區域彩度極低。
+        """
+        x1, y1, x2, y2 = box
+        h, w = frame.shape[:2]
+        x1, y1 = max(0, int(x1)), max(0, int(y1))
+        x2, y2 = min(w, int(x2)), min(h, int(y2))
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        crop = frame[y1:y2, x1:x2]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        # 🌟 飽和度門檻 55：涵蓋粉彩/淺色氣球（S≈60），
+        # 白袍/牆面（S<15）仍遠低於門檻，不影響排除效果
+        mask = cv2.inRange(hsv, (0, 55, 70), (180, 255, 255))
+        return float(np.count_nonzero(mask)) / float(mask.size)
 
     @staticmethod
     def _skin_ratio(frame, box):
@@ -176,6 +204,12 @@ class ModelManager:
                             continue  # 細長框：手臂/軀幹誤判
                         if self._skin_ratio(frame, (x1, y1, x2, y2)) > 0.35:
                             continue  # 膚色過半：手/手臂誤判
+                        # 🌟 新增：彩度過濾（config 可停用）
+                        # 白袍衣袖、牆面等低彩度區域被誤判成氣球時，
+                        # 框內幾乎沒有鮮豔像素 → 排除。
+                        if (self.stage5_min_colorful_ratio > 0
+                                and self._colorful_ratio(frame, (x1, y1, x2, y2)) < self.stage5_min_colorful_ratio):
+                            continue  # 彩度不足：衣物/牆面誤判
 
                     boxes.append((x1, y1, x2, y2))
             

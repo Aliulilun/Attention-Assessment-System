@@ -434,6 +434,15 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     if frame_count % 100 == 0:
                         print(f"⚠️ analyze_interaction 跳過 (Frame {frame_count}): {_ia_err}")
             child_is_pointing_hit = last_child_is_pointing_hit  # 🌟 沿用快取結果（YOLO_SKIP 跳幀時保持穩定）
+
+            # ============================================================
+            # 🌟 新增：Stage 8 指向特規
+            # 第 8 題（怪聲）沒有目標物，指向計分「只要小朋友的指向射線
+            # 存在」就算一次，不需要射線指中任何物品。
+            # 其他階段維持原邏輯（射線必須命中目標物才算 Pointing Hit）。
+            # ============================================================
+            if current_stage == 8 and interaction.last_child_pointing_active:
+                child_is_pointing_hit = True
             _t_interaction += _time.perf_counter() - _t0  # 計時：Interaction 段結束
 
             # ──────────────────────────────────────────────
@@ -937,7 +946,12 @@ def main():
     print("=" * 60)
     print("📢  Step 1：載入 GPU 視覺模型")
     print("=" * 60)
-    model_manager = ModelManager(model_dir=MODEL_DIR)
+    # 🌟 修改：傳入 Stage5 氣球彩度過濾門檻（config.yaml 的 object_detection 區塊）
+    _obj_cfg = CONFIG.get('object_detection', {}) if isinstance(CONFIG, dict) else {}
+    model_manager = ModelManager(
+        model_dir=MODEL_DIR,
+        stage5_min_colorful_ratio=_obj_cfg.get('stage5_min_colorful_ratio', 0.12),
+    )
     pose_path = os.path.join(MODEL_DIR, 'yolo11n-pose.pt')
     hand_path = os.path.join(MODEL_DIR, 'gaze', 'hand_landmarker.task')  # 🌟 修改：實際路徑在 model/gaze/ 下
     # 🌟 修改：明確傳入 hand_model_path，避免 Windows junction/symlink 下
