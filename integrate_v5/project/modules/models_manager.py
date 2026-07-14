@@ -39,6 +39,24 @@ class ModelManager:
             14: "background_model.pt"
         }
 
+    @staticmethod
+    def _skin_ratio(frame, box):
+        """
+        🌟 新增：計算框內「皮膚色」像素比例（YCrCb 色彩空間的經典膚色範圍）。
+        用途：氣球是鮮豔色物體，誤判成氣球的手/手臂則以膚色為主，
+        比例過高即可判定為人體誤偵測。
+        """
+        x1, y1, x2, y2 = box
+        h, w = frame.shape[:2]
+        x1, y1 = max(0, int(x1)), max(0, int(y1))
+        x2, y2 = min(w, int(x2)), min(h, int(y2))
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        crop = frame[y1:y2, x1:x2]
+        ycrcb = cv2.cvtColor(crop, cv2.COLOR_BGR2YCrCb)
+        mask = cv2.inRange(ycrcb, (0, 133, 77), (255, 173, 127))
+        return float(np.count_nonzero(mask)) / float(mask.size)
+
     def _get_model(self, model_name):
         """
         惰性載入模型 (Lazy Loading)：避免一次載入太多模型導致顯存 (VRAM) 爆炸
@@ -133,14 +151,32 @@ class ModelManager:
                 
                 for box in boxes_data:
                     x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-                    
+
                     box_area = (x2 - x1) * (y2 - y1)
                     area_ratio = box_area / frame_area
-                    
+
                     # 面積過濾防線：確保人體被濾掉
                     if stage in [1, 2, 6, 7] and area_ratio > 0.40:
                         continue
-                        
+
+                    # ============================================================
+                    # 🌟 新增：Stage 5（氣球）人體誤判過濾
+                    # 問題：balloon_model 會把施測者的手/手臂誤判成氣球，
+                    # 小朋友看向施測者的手就被記成「看向物品」（假 TB）。
+                    # 兩道與氣球特性綁定的檢查：
+                    # 1. 長寬比：氣球接近圓/橢圓，誤判的手臂框細長
+                    # 2. 膚色比例：氣球是鮮豔色，框內膚色像素 > 35% 即為人體
+                    # ============================================================
+                    if stage == 5:
+                        bw, bh = x2 - x1, y2 - y1
+                        if bw <= 0 or bh <= 0:
+                            continue
+                        aspect = max(bw / bh, bh / bw)
+                        if aspect > 2.2:
+                            continue  # 細長框：手臂/軀幹誤判
+                        if self._skin_ratio(frame, (x1, y1, x2, y2)) > 0.35:
+                            continue  # 膚色過半：手/手臂誤判
+
                     boxes.append((x1, y1, x2, y2))
             
             return boxes

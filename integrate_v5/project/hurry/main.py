@@ -354,6 +354,20 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             _t_ocr += _time.perf_counter() - _t0  # 計時：OCR 段結束
 
             # ──────────────────────────────────────────────
+            # 🌟 新增：1-10 量測結束邊界
+            # 影片進入第 11 階段（機指近物，「小朋友你看」）後，
+            # 1-10 的量測即告結束。current_stage 會停在 10
+            # （ACTIVE_STAGES 擋住 11+ 切換），但 Gazing 統計只看
+            # 當前階段——不設邊界的話，11-14 階段期間小朋友的注視
+            # 會全部灌進 Stage 10 的 Score / Hit 統計，數據失真。
+            # ──────────────────────────────────────────────
+            measurement_over = False
+            if hasattr(scoring, 'stage_start_times'):
+                _t11 = scoring.stage_start_times.get(11)
+                if _t11 is not None and current_time_sec >= _t11:
+                    measurement_over = True
+
+            # ──────────────────────────────────────────────
             # 2. 視覺偵測（只在 ACTIVE_STAGES 內執行）
             # ──────────────────────────────────────────────
             child_is_pointing_hit = False
@@ -613,23 +627,26 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     active_gaze['gaze_angles_deg'][1],
                 )
 
+            # 🌟 修改：量測結束後不再餵入評分引擎，
+            # 避免 11-14 階段的注視/指向累積進 Stage 10 統計
             try:
-                scoring.update_frame(
-                    time_sec=current_time_sec,
-                    current_stage=current_stage,
-                    is_in_trigger_window=is_in_trigger_window,
-                    child_is_pointing_hit=child_is_pointing_hit,
-                    child_is_gazing_at=child_is_gazing_at,
-                    child_is_gazing_at_tester=child_is_gazing_at_tester,
-                    gaze_result=active_gaze,
-                    robot_rays=[],
-                    robot_boxes=robot_boxes,
-                    yolo_boxes=yolo_boxes,
-                    # 🌟 修改：計分引擎的 TH(robot_box) 原本用原始 is_gazing_at_box 重算，
-                    # 會繞過平滑與遲滯、再度閃爍。改為直接回傳主迴圈已穩定的判定結果。
-                    is_gazing_at_box_func=lambda _gaze, _box: child_is_gazing_at_tester,
-                    tester_gaze_angles=tester_gaze_angles,
-                )
+                if not measurement_over:
+                    scoring.update_frame(
+                        time_sec=current_time_sec,
+                        current_stage=current_stage,
+                        is_in_trigger_window=is_in_trigger_window,
+                        child_is_pointing_hit=child_is_pointing_hit,
+                        child_is_gazing_at=child_is_gazing_at,
+                        child_is_gazing_at_tester=child_is_gazing_at_tester,
+                        gaze_result=active_gaze,
+                        robot_rays=[],
+                        robot_boxes=robot_boxes,
+                        yolo_boxes=yolo_boxes,
+                        # 🌟 修改：計分引擎的 TH(robot_box) 原本用原始 is_gazing_at_box 重算，
+                        # 會繞過平滑與遲滯、再度閃爍。改為直接回傳主迴圈已穩定的判定結果。
+                        is_gazing_at_box_func=lambda _gaze, _box: child_is_gazing_at_tester,
+                        tester_gaze_angles=tester_gaze_angles,
+                    )
             except Exception as _sc_err:
                 if frame_count % 100 == 0:
                     print(f"⚠️ scoring.update_frame 跳過 (Frame {frame_count}): {_sc_err}")
@@ -646,8 +663,11 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             cv2.putText(display_frame,
                         f"Time: {current_time_sec:.1f}s  |  {video_basename}",
                         (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, c_text, 2)
-            cv2.putText(display_frame,
-                        f"Stage: {current_stage}  [Measuring: 1-10]",
+            # 🌟 修改：量測結束後 UI 顯示 DONE，明確告知後續不再計分
+            _stage_label = (f"Stage: {current_stage}  [Measuring: 1-10]"
+                            if not measurement_over else
+                            f"Stage: {current_stage}  [DONE - Stage 11+ reached]")
+            cv2.putText(display_frame, _stage_label,
                         (15, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.8, c_text, 2)
             cv2.putText(display_frame,
                         f"Keyword: {'YES (Active)' if is_in_trigger_window else 'NO (Idle)'}",

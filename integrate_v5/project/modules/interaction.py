@@ -312,6 +312,13 @@ class InteractionEngine:
     ARM_LINK_ACCEPT_TH = 1.0
     # 🌟 新增：fallback 身體框外擴比例（佔框長邊）
     FALLBACK_BOX_EXPAND = 0.15
+    # 🌟 新增：曖昧情況偏向施測者的分差門檻
+    # 兩人的手臂連動分數接近時（Child 沒有贏過 Tester 這個差距以上），
+    # 一律判給施測者。理由：施測者伸手進兒童區指物時，小朋友常緊鄰
+    # 手旁，YOLO 對兒童手腕的估計會飄到施測者手附近、以些微分差搶贏
+    # → 產生假的 Child 射線。臨床上「假的小朋友指向」比「漏掉一幀」
+    # 更糟，故平手或險勝時偏向 Tester。
+    TESTER_PRIORITY_MARGIN = 0.25
     # 🌟 新增：Child 認領的正向證據門檻
     # 兩人都在場時，一隻手要被判給 Child，Child 自己的手臂連動分數
     # 必須 <= 此值（有真實手臂證據）。防止施測者高舉指物的手落在
@@ -366,8 +373,18 @@ class InteractionEngine:
             opp_ratio = sum(1 for v in votes if v == opposite) / len(votes)
             # 遲滯：相反證據要夠壓倒性（且視窗已累積夠多幀）才換主人
             if len(votes) >= 5 and opp_ratio >= self.HAND_OWNER_SWITCH_RATIO:
+                old_owner = best_track["owner"]
                 best_track["owner"] = opposite
                 best_track["votes"] = deque(votes, maxlen=self.HAND_OWNER_VOTE_WIN)
+                # 🌟 新增：歸屬翻轉時，立即清除舊主人的殘留射線
+                # 此手先前以錯誤身分貢獻的射線方向已不可信；
+                # 不清除的話，防閃爍的 hold 緩衝會讓錯色射線再拖 12 幀
+                # （畫面上就是「標籤已改對、射線顏色還是錯的」殘影）。
+                self.ray_history[old_owner]["origin"].clear()
+                self.ray_history[old_owner]["vector"].clear()
+                self.ray_angle_history[old_owner].clear()
+                self.dwell_counters[old_owner] = 0
+                self.hold_counters[old_owner] = 0
             return best_track["owner"]
 
         # 沒有匹配到 → 新的手，建立 track，首幀直接用 raw_owner
@@ -662,6 +679,22 @@ class InteractionEngine:
                         best_owner = "Tester"
                     else:
                         continue
+
+                # ============================================================
+                # 🌟 新增（曖昧情況偏向施測者）：
+                # Child 以「些微分差」贏過 Tester 時不予採信。
+                # 施測者的手伸進兒童框、小朋友緊鄰在旁時，YOLO 對兒童
+                # 手腕的估計常飄到施測者手附近，讓 Child 險勝幾幀 →
+                # 假 Child 射線。要判給 Child，其連動分數必須比 Tester
+                # 好至少 TESTER_PRIORITY_MARGIN；否則只要 Tester 連動
+                # 可信（<= ARM_LINK_ACCEPT_TH）就判給 Tester。
+                # 小朋友真的指物時分數通常 0.1~0.3、遠優於施測者，不受影響。
+                # ============================================================
+                if best_owner == "Child" and tester_present and child_present:
+                    _cs = owner_scores.get("Child", float('inf'))
+                    _ts = owner_scores.get("Tester", float('inf'))
+                    if _ts <= self.ARM_LINK_ACCEPT_TH and _cs > _ts - self.TESTER_PRIORITY_MARGIN:
+                        best_owner = "Tester"
 
                 # ============================================================
                 # 🌟 新增（問題1）：歸屬時間平滑
