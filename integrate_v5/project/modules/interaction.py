@@ -99,10 +99,7 @@ class InteractionEngine:
         }
         self.track_owner_votes: Dict[int, deque] = {}
         self.owner_vote_window: int = max(5, sma_window * 2)
-        self.ray_angle_history: Dict[str, deque] = {
-            "Child": deque(maxlen=sma_window),
-            "Tester": deque(maxlen=sma_window)
-        }
+        # 🌟 清理：移除 ray_angle_history——只有初始化與清空、從未寫入或讀取的死狀態
 
         # ============================================================
         # 🌟 新增（問題1：邊界處歸屬閃爍）：手部歸屬追蹤器
@@ -424,14 +421,7 @@ class InteractionEngine:
     # 低於此距離代表手指被遮擋、只偵測到手腕，不顯示也不射線
     MIN_FINGER_EXTEND_RATIO = 0.030
 
-    # 🌟 新增：單一施測者場景的「跨區連動門檻」
-    # 只偵測到施測者、手腕落在兒童區時用來區分：
-    #  min_score <= 門檻 → 手與施測者手臂強連動 → 施測者跨區伸手指物（維持 Tester）
-    #  min_score >  門檻 → 連動弱 → 可能是身體漏偵測的兒童手（才歸 Child）
-    # arm link score 已用 body_scale 正規化（同一手腕約 0.1~0.5），1.0 留有安全邊際。可調。
-    CROSS_ZONE_LINK_TH = 1.0
-
-    # 🌟 新增：arm link 歸屬的可信門檻
+    # 🌟 arm link 歸屬的可信門檻
     # min_score 超過此值代表這隻手跟「贏家」的手臂連動其實很弱，
     # 歸屬結果不可信，改走 fallback（身體框包含判定）。
     # 原本的防呆門檻 1.5 太寬：施測者跨區、手臂被遮擋時，
@@ -509,7 +499,6 @@ class InteractionEngine:
                 # （畫面上就是「標籤已改對、射線顏色還是錯的」殘影）。
                 self.ray_history[old_owner]["origin"].clear()
                 self.ray_history[old_owner]["vector"].clear()
-                self.ray_angle_history[old_owner].clear()
                 self.dwell_counters[old_owner] = 0
                 self.hold_counters[old_owner] = 0
             return best_track["owner"]
@@ -584,12 +573,8 @@ class InteractionEngine:
                        "vector": deque(maxlen=self.ray_history["Tester"]["vector"].maxlen)},
         }
         self.track_owner_votes  = {}
-        self.ray_angle_history  = {
-            "Child":  deque(maxlen=self.ray_angle_history["Child"].maxlen),
-            "Tester": deque(maxlen=self.ray_angle_history["Tester"].maxlen),
-        }
-        self.hand_owner_tracks = []  # 🌟 新增：跨影片清空手部歸屬追蹤器
-        self.last_child_pointing_active = False  # 🌟 新增：跨影片重置
+        self.hand_owner_tracks = []  # 跨影片清空手部歸屬追蹤器
+        self.last_child_pointing_active = False  # 跨影片重置
         print(">>> [InteractionEngine] tracking 狀態已重置")
 
     def analyze_interaction(self, frame: np.ndarray, yolo_boxes: List[Tuple[float, float, float, float]], elapsed_ms: Optional[int] = None) -> bool:
@@ -914,7 +899,6 @@ class InteractionEngine:
                     self.dwell_counters[owner] = 0
                     self.ray_history[owner]["origin"].clear()
                     self.ray_history[owner]["vector"].clear()
-                    self.ray_angle_history[owner].clear()
 
             if self.dwell_counters[owner] >= self.DWELL_FRAMES and self.hold_counters[owner] > 0:
                 pointing_owners.add(owner)
