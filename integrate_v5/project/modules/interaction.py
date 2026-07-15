@@ -71,13 +71,14 @@ class InteractionEngine:
             # 導致把臉、衣服紋路都誤判為手。
             num_hands=2,
             running_mode=vision.RunningMode.VIDEO,
-            # 🌟 修改 3：信心閾值再提高（0.35 → 0.5）
-            # 使用者要求「被遮擋就不要形成射線，要很確認偵測到才形成」。
-            # 手被氣球等物體部分遮擋時，MediaPipe 的偵測/存在信心會下降，
-            # 提高門檻讓不確定的手在源頭就被丟棄，寧可漏偵測不要誤射線。
-            min_hand_detection_confidence=0.50,
-            min_hand_presence_confidence=0.50,
-            min_tracking_confidence=0.40
+            # 🌟 修改 4：信心閾值回調（0.50 → 0.40）
+            # 0.50 實測會漏掉清楚伸手指物的真手（整隻手完全沒被偵測）。
+            # 「被遮擋不形成射線」的把關改由影像實體驗證負責
+            # （食指連線皮膚比例＋關節皮膚檢查——幻覺/被遮擋的手
+            # 在那裡的分數趨近 0，照樣被擋），源頭偵測回到合理水準。
+            min_hand_detection_confidence=0.40,
+            min_hand_presence_confidence=0.40,
+            min_tracking_confidence=0.35
         )
         self.mp_hands = vision.HandLandmarker.create_from_options(options)
         self.timestamp_ms: int = 0
@@ -139,7 +140,18 @@ class InteractionEngine:
         cv2.circle(frame, start_pt, 6, (255, 255, 255), -1)
         cv2.circle(frame, start_pt, 9, color, 2)
 
+    # 🌟 新增：指向除錯顯示——射線沒形成時，在手旁邊顯示是哪一關擋掉的
+    # （調校完成、確認判定穩定後可改為 False 關閉顯示）
+    POINTING_DEBUG = True
+
     def is_valid_pointing(self, landmarks: LegacyHandLms, frame_w: int, frame_h: int, owner: str, frame: Optional[np.ndarray] = None) -> Optional[float]:
+        # 🌟 新增：記錄拒絕原因（供除錯顯示），成功時為 None
+        self.last_reject_reason: Optional[str] = None
+
+        def rej(code: str):
+            self.last_reject_reason = code
+            return None
+
         def get_pt(idx: int) -> np.ndarray:
             return np.array([landmarks.landmark[idx].x * frame_w, landmarks.landmark[idx].y * frame_h])
 
@@ -161,13 +173,13 @@ class InteractionEngine:
         for node in [self.WRIST, self.IDX_MCP, self.IDX_PIP, self.IDX_TIP, self.MID_PIP, self.MID_TIP, self.RNG_PIP, self.RNG_TIP]:
             lm = landmarks.landmark[node]
             if not (margin <= lm.x <= 1-margin and margin <= lm.y <= 1-margin):
-                return None
+                return rej("edge")       # 關鍵點貼近畫面邊緣
 
         dist = lambda p1, p2: float(np.linalg.norm(p1 - p2))
         scale = self._hand_scale(wri, mid_mcp)
 
-        if dist(idx_tip, idx_mcp) <= dist(idx_pip, idx_mcp) + 0.04 * scale: return None
-        if dist(idx_tip, wri) < 0.17 * scale: return None
+        if dist(idx_tip, idx_mcp) <= dist(idx_pip, idx_mcp) + 0.04 * scale: return rej("idx-curl")   # 食指未伸直
+        if dist(idx_tip, wri) < 0.17 * scale: return rej("idx-short")                                # 食指過短/被遮
 
         # ============================================================
         # 🌟 新增（問題4：射線連錯手指）：食指尖必須是「離手腕最遠」的指尖
@@ -177,9 +189,9 @@ class InteractionEngine:
         # 兩種情況都不該形成射線，直接拒絕，保證射線永遠是手腕→食指。
         # ============================================================
         d_idx_wri = dist(idx_tip, wri)
-        if d_idx_wri <= dist(mid_tip, wri): return None
-        if d_idx_wri <= dist(rng_tip, wri): return None
-        if d_idx_wri <= dist(pnk_tip, wri): return None
+        if d_idx_wri <= dist(mid_tip, wri): return rej("not-far(mid)")
+        if d_idx_wri <= dist(rng_tip, wri): return rej("not-far(rng)")
+        if d_idx_wri <= dist(pnk_tip, wri): return rej("not-far(pnk)")
 
         # ============================================================
         # 🌟 新增（問題3：手放桌上誤生成射線）：兩種角色一律要求
@@ -187,9 +199,14 @@ class InteractionEngine:
         # 中指/無名指尖會遠超過其 PIP，此檢查會直接拒絕。
         # 真正的指向手勢（食指伸、其餘捲起）不受影響。
         # ============================================================
-        is_mid_folded = dist(mid_tip, wri) < dist(mid_pip, wri) + 0.10 * scale
-        is_rng_folded = dist(rng_tip, wri) < dist(rng_pip, wri) + 0.10 * scale
-        if not (is_mid_folded and is_rng_folded): return None
+        # 🌟 修改：彎曲判定門檻 0.10 → 0.30 倍掌長（「必須全彎」放寬為「不能完全伸直」）
+        # 小朋友指物時中指/無名指常只是半開（指尖超過 PIP 約 0.2~0.3 倍掌長），
+        # 0.10 會把這種真指向誤判成手掌平放。完全伸直時指尖超過 PIP 約 0.5 倍
+        # 掌長，0.30 仍擋得住；且手平放的情況在前面「食指明顯比中指長」與
+        # 「食指是最遠指尖」兩道優勢檢查就會先被拒絕，防護不依賴這一關。
+        is_mid_folded = dist(mid_tip, wri) < dist(mid_pip, wri) + 0.30 * scale
+        is_rng_folded = dist(rng_tip, wri) < dist(rng_pip, wri) + 0.30 * scale
+        if not (is_mid_folded and is_rng_folded): return rej("mid/rng")  # 中指/無名指完全伸直
 
         # ============================================================
         # 🌟 新增：標準指向手勢的完整四指檢查
@@ -199,29 +216,34 @@ class InteractionEngine:
         #    掌指關節（距離 <= 0.6 倍手掌長）。比出「讚」或 L 形
         #    手勢時拇指外張，距離會遠超此值 → 不形成射線。
         # ============================================================
-        is_pnk_folded = dist(pnk_tip, wri) < dist(pnk_pip, wri) + 0.10 * scale
-        if not is_pnk_folded: return None
+        # 🌟 修改：同中指/無名指，小指彎曲門檻 0.10 → 0.30 倍掌長
+        is_pnk_folded = dist(pnk_tip, wri) < dist(pnk_pip, wri) + 0.30 * scale
+        if not is_pnk_folded: return rej("pinky")  # 小指完全伸直
 
         thb_tip = get_pt(self.THB_TIP)
-        if min(dist(thb_tip, idx_mcp), dist(thb_tip, mid_mcp)) > 0.60 * scale:
-            return None  # 拇指外張：非標準指向手勢
+        # 🌟 修改：0.60 → 0.80。小朋友指物時拇指常半張開（不像大人收攏），
+        # 0.60 會誤殺真指向；比「讚」/L 形手勢的拇指距離（~1.0 倍掌長）仍會被擋。
+        if min(dist(thb_tip, idx_mcp), dist(thb_tip, mid_mcp)) > 0.80 * scale:
+            return rej("thumb")  # 拇指外張：非標準指向手勢
 
         if owner == "Tester":
             dist_idx = dist(idx_tip, idx_mcp)
             if dist_idx <= dist(mid_tip, mid_mcp) or dist_idx <= dist(rng_tip, rng_mcp) or dist_idx <= dist(pnk_tip, pnk_mcp):
-                return None
-            if dist(idx_tip, wri) < dist(mid_tip, wri) + 0.13 * scale: return None
-            if (idx_tip[0] - wri[0]) < 0.07 * scale: return None
+                return rej("t-idx<other")
+            if dist(idx_tip, wri) < dist(mid_tip, wri) + 0.13 * scale: return rej("t-idx~mid")
+            if (idx_tip[0] - wri[0]) < 0.07 * scale: return rej("t-dir")
             # 🌟 新增（問題3）：食指方向須與手腕→食指根方向大致一致（同兒童標準、稍寬鬆）
-            if self.get_angle(idx_mcp - wri, idx_tip - idx_mcp) > 50: return None
+            if self.get_angle(idx_mcp - wri, idx_tip - idx_mcp) > 55: return rej("t-align")
         else:
-            if dist(idx_tip, wri) <= dist(mid_tip, wri) + 0.07 * scale: return None
-            if self.get_angle(idx_mcp - wri, idx_tip - idx_mcp) > 40: return None
+            if dist(idx_tip, wri) <= dist(mid_tip, wri) + 0.07 * scale: return rej("idx~mid")
+            # 🌟 修改：40 → 55。手貼桌、手腕在後下方時，手腕→食指根與
+            # 食指根→指尖的夾角天然偏大，40° 會誤殺這種常見的桌面指物姿勢。
+            if self.get_angle(idx_mcp - wri, idx_tip - idx_mcp) > 55: return rej("align")
 
         idx_angle = self.get_angle(idx_pip - idx_mcp, idx_tip - idx_pip)
         # 🌟 新增（問題3）：食指本身必須打直（PIP 彎曲角 ≤ 45°）。
         # 手鬆放桌上、食指微彎垂下時角度會超標，不形成射線。
-        if idx_angle > 45: return None
+        if idx_angle > 45: return rej("pip-bend")
 
         # ============================================================
         # 🌟 新增：食指「實體驗證」（抓 MediaPipe 幻覺手指）
@@ -233,7 +255,7 @@ class InteractionEngine:
         if frame is not None:
             if self._finger_pixels_skin_ratio(frame, idx_pip, idx_tip,
                                               self.FINGER_SKIN_SAMPLES) < self.FINGER_SKIN_MIN_RATIO:
-                return None
+                return rej("skin-finger")  # 食指連線非皮膚（幻覺/遮擋）
 
             # ============================================================
             # 🌟 新增：手背關節實體驗證（被遮擋就不形成射線）
@@ -247,7 +269,7 @@ class InteractionEngine:
                 if self._point_is_skin(frame, kp[0], kp[1])
             )
             if knuckle_skin < self.KNUCKLE_MIN_SKIN:
-                return None
+                return rej("knuckle")  # 關節非皮膚（手被遮擋）
 
         return idx_angle
 
@@ -300,13 +322,15 @@ class InteractionEngine:
 
     # 🌟 新增：食指「實體驗證」參數
     # 沿食指 PIP→TIP 連線取樣的點數，與判定為真手指所需的皮膚色比例
-    # 🌟 修改：0.5 → 0.7（要很確認偵測到才形成射線）
+    # 🌟 修改：0.7 → 0.55——0.7 會因動態模糊/光線讓真指向被誤殺；
+    # 幻覺手指落在牆面/物體上的比例趨近 0，0.55 照樣擋得住。
     FINGER_SKIN_SAMPLES = 8
-    FINGER_SKIN_MIN_RATIO = 0.7
+    FINGER_SKIN_MIN_RATIO = 0.55
     # 🌟 新增：手背關節實體驗證——四個掌指關節（食/中/無名/小指根部）
     # 中至少要有幾個取樣到皮膚色。手被氣球等物體遮擋時，
     # 關節位置取樣到的是遮擋物顏色 → 拒絕形成射線。
-    KNUCKLE_MIN_SKIN = 3
+    # 🌟 修改：3 → 2——手側向鏡頭時部分關節有陰影；被遮擋的手 0~1 個仍被擋。
+    KNUCKLE_MIN_SKIN = 2
 
     @staticmethod
     def _point_is_skin(frame: np.ndarray, px: float, py: float) -> bool:
@@ -386,7 +410,10 @@ class InteractionEngine:
     # 🌟 新增：臉部排斥半徑的 body_scale 係數
     # body_scale ≈ 肩寬；臉部關鍵點大致落在 ~0.6 倍肩寬內，故以此正規化排斥半徑，
     # 避免固定 90px 在近距離/高解析度下太小、或誤殺靠近自己臉部的真實指向手。
-    FACE_REJECT_SCALE_K = 0.6
+    # 🌟 修改：0.6 → 0.45。小朋友把手橫過自己臉前指物時，手腕會落進
+    # 0.6 倍肩寬的排斥圈被整隻跳過（畫面上完全沒有手部標記）。
+    # 真正的「臉被誤判成手」其手腕都落在臉框內（< ~0.4 倍肩寬），0.45 仍擋得住。
+    FACE_REJECT_SCALE_K = 0.45
 
     # 🌟 修改：手部幾何驗證常數
     # 手腕到任意手指關鍵點最大距離（佔幀寬比例）
@@ -843,6 +870,12 @@ class InteractionEngine:
 
                 idx_angle = self.is_valid_pointing(hand_lms, FRAME_W, FRAME_H, best_owner, frame=frame)
                 if idx_angle is None:
+                    # 🌟 新增：指向除錯顯示——射線沒形成時，在手旁標出被哪一關擋掉
+                    # （例：align=方向不齊、mid/rng=中指未彎、skin-finger=食指非皮膚）
+                    if self.POINTING_DEBUG and getattr(self, 'last_reject_reason', None):
+                        cv2.putText(frame, f"x {self.last_reject_reason}",
+                                    (p_wri[0] + 12, p_wri[1] + 55),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
                     continue
 
                 current_frame_pointing[best_owner] = True
