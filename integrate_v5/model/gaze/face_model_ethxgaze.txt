@@ -1,0 +1,28 @@
+# 3D 人臉模型 - ETH-XGaze 官方 6 點模型
+# 來源: MediaPipe Canonical Face Model
+# 格式: X Y Z (單位: cm)
+# 座標系統: X 向右，Y 向上，Z 向前（遠離臉部）
+#
+#   這 6 個點是 ETH-XGaze 標準配置 (Zhang et al., 2018 ETRA)
+#   - 4 個眼角點（左外、左內、右內、右外）
+#   - 2 個嘴角點（左嘴角、右嘴角）
+#
+
+# Left eye outer corner - MediaPipe index: 33
+-4.445859 2.663991 3.173422
+
+# Left eye inner corner - MediaPipe index: 133
+-1.856432 2.585245 3.757904
+
+# Right eye inner corner - MediaPipe index: 362
+1.856432 2.585245 3.757904
+
+# Right eye outer corner - MediaPipe index: 263
+4.445859 2.663991 3.173422
+
+# Left mouth corner - MediaPipe index: 61
+-2.456206 -4.342621 4.283884
+
+# Right mouth corner - MediaPipe index: 291
+2.456206 -4.342621 4.283884
+

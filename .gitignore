@@ -27,7 +27,16 @@ model_test/*
 !code/**
 
 # =========================
-# Keep basic repo files
+# Keep integrate_v5 folder in full (含模型權重／ffmpeg.exe，
+# 大型二進位檔已透過 .gitattributes 交給 Git LFS 追蹤)
 # =========================
-!.gitignore
-!README.md
+!integrate_v5/**
+
+# =========================
+# Keep basic repo files
+# 🌟 加上開頭 / 限定只在「repo 根目錄」生效，避免不小心連同
+# integrate_v5/、code/ 等子資料夾底下同名的 .gitignore / README.md
+# 也被意外解除忽略（曾經因此讓 integrate_v5/.gitignore 被誤 add）
+# =========================
+!/.gitignore
+!/README.md
