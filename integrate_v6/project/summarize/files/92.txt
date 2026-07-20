@@ -1,0 +1,265 @@
+=== Result Summary ===
+Video: C:\Users\wayne\Desktop\project\integrate_v5\hurry\..\..\github\model_test\input\92.mp4
+----------------------------------------
+Total Score: 6
+Total Gazing Events: 48
+========================================
+=== T0 / Pointing / TB / TH Detail ===
+  First-occurrence = timestamp; Count = total (incl. first)
+  Cooldowns: TB/TH=1.5s, Pointing=0.8s
+  Counting rule: TB/TH alternation (gaze must switch object<->head to count again)
+========================================
+
+01. Stage 1 -- 真人指近物(Pointing - Near) -- 反應等級 F(0分)
+    T0       = 19.78s
+    Pointing = not detected
+    TB       = not achieved
+    TH       = not achieved
+    Sequence = T0 -> Pointing -- -> TB -- -> TH --
+
+02. Stage 2 -- 真人指近物(Pointing - Near) -- 反應等級 LI(3分)
+    T0       = 23.76s
+    Pointing = not detected
+    TB       = 23.76s  (+0.0s from T0) x1
+    TH       = 23.76s  (+0.0s from T0 / +0.0s from TB) x1
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+03. Stage 3 -- 真人指遠物(Pointing - Far) -- 反應等級 LI(3分)
+    T0       = 27.83s
+    Pointing = not detected
+    TB       = 27.9s  (+0.07s from T0) x1
+    TH       = 27.9s  (+0.07s from T0 / +0.0s from TB) x1
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+04. Stage 4 -- 真人指遠物(Pointing - Far) -- 反應等級 LI(3分)
+    T0       = 32.83s
+    Pointing = not detected
+    TB       = 33.1s  (+0.27s from T0) x2
+    TH       = 33.1s  (+0.27s from T0 / +0.0s from TB) x2
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+05. Stage 5 -- 神奇氣球(Magical Balloon) -- 反應等級 LI(3分)
+    T0       = 42.29s
+    Pointing = not detected
+    TB       = 44.19s  (+1.9s from T0) x4
+    TH       = 44.19s  (+1.9s from T0 / +0.0s from TB) x4
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+06. Stage 6 -- 看偶寫字 (Puppet Writing) -- 反應等級 LI(3分)
+    T0       = 81.36s
+    Pointing = not detected
+    TB       = 81.49s  (+0.13s from T0) x3
+    TH       = 81.59s  (+0.23s from T0 / +0.1s from TB) x3
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+07. Stage 7 -- 開箱驚喜袋(Mystery Bag) -- 反應等級 LI(3分)
+    T0       = 117.98s
+    Pointing = not detected
+    TB       = 125.18s  (+7.2s from T0) x11
+    TH       = 127.48s  (+9.5s from T0 / +2.3s from TB) x11
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+08. Stage 8 -- 手機怪聲(Strange Sound) -- 反應等級 LI(2分)
+    T0       = 171.0s
+    Pointing = not detected
+    TB       = -- (no TB condition)
+    TH       = 171.24s  (+0.24s from T0) x2
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+09. Stage 9 -- 機器人畫畫(Robot Drawing) -- 反應等級 LI(3分)
+    T0       = 291.56s
+    Pointing = not detected
+    TB       = 294.29s  (+2.73s from T0) x5
+    TH       = 294.29s  (+2.73s from T0 / +0.0s from TB) x4
+    Sequence = T0 -> Pointing -- -> TB OK -> TH OK
+
+10. Stage 10 -- 機器人煙火秀(Social Referencing) -- 反應等級 LR(1分)
+    T0       = 326.94s
+    Pointing = not detected
+    TB       = 336.82s  (+9.88s from T0) x1
+    TH       = not achieved
+    Sequence = T0 -> Pointing -- -> TB OK -> TH --
+
+========================================
+=== Stage Gazing Stats ===
+Stage 5 [神奇氣球(Magical Balloon)]: scored, GazingCount=12
+Stage 6 [看偶寫字 (Puppet Writing)]: scored, GazingCount=7
+Stage 7 [開箱驚喜袋(Mystery Bag)]: scored, GazingCount=17
+Stage 8 [手機怪聲(Strange Sound)]: scored, GazingCount=1
+Stage 9 [機器人畫畫(Robot Drawing)]: scored, GazingCount=3
+Stage 10 [機器人煙火秀(Social Referencing)]: scored, GazingCount=8
+----------------------------------------
+=== Full Event Log ===
+[SYSTEM] Scoring Version: HURRY_1to10_BATCH_V1
+[9.8s] Stage change -> 1
+[19.8s] T0: 真人指近物(Pointing - Near)
+[23.3s] Stage change -> 2
+[23.8s] T0: 真人指近物(Pointing - Near)
+[23.8s] TB#1: 真人指近物(Pointing - Near) RT=0.0s
+[23.8s] TH#1: 真人指近物(Pointing - Near) +0.0s
+[27.8s] Stage change -> 3
+[31.9s] T0(ocr代償): 真人指遠物(Pointing - Far)
+[27.9s] TB#1: 真人指遠物(Pointing - Far) RT=0.07s
+[27.9s] TH#1: 真人指遠物(Pointing - Far) +0.07s
+[32.8s] Stage change -> 4
+[36.8s] T0(保底): 真人指遠物(Pointing - Far)
+[33.1s] TB#1: 真人指遠物(Pointing - Far) RT=0.27s
+[33.1s] TH#1: 真人指遠物(Pointing - Far) +0.27s
+[36.0s] TB#2: 真人指遠物(Pointing - Far)
+[36.2s] TH#2: 真人指遠物(Pointing - Far)
+[36.8s] Stage change -> 5
+[36.8s] Gazing Stage 5 Score=1 Added=YES
+[42.3s] T0(obj): 神奇氣球(Magical Balloon)
+[44.2s] TB#1: 神奇氣球(Magical Balloon) RT=1.9s
+[44.2s] TH#1: 神奇氣球(Magical Balloon) +1.9s
+[44.2s] Gazing Stage 5 Score=1 Added=NO
+[46.6s] TB#2: 神奇氣球(Magical Balloon)
+[46.6s] Gazing Stage 5 Score=1 Added=NO
+[47.5s] Gazing Stage 5 Score=1 Added=NO
+[49.5s] Gazing Stage 5 Score=1 Added=NO
+[53.5s] Gazing Stage 5 Score=1 Added=NO
+[54.1s] TH#2: 神奇氣球(Magical Balloon)
+[54.7s] TB#3: 神奇氣球(Magical Balloon)
+[54.7s] Gazing Stage 5 Score=1 Added=NO
+[57.2s] Gazing Stage 5 Score=1 Added=NO
+[58.1s] Gazing Stage 5 Score=1 Added=NO
+[59.4s] TH#3: 神奇氣球(Magical Balloon)
+[60.4s] TB#4: 神奇氣球(Magical Balloon)
+[60.4s] Gazing Stage 5 Score=1 Added=NO
+[63.4s] Gazing Stage 5 Score=1 Added=NO
+[70.5s] Gazing Stage 5 Score=1 Added=NO
+[70.7s] TH#4: 神奇氣球(Magical Balloon)
+[73.7s] Stage change -> 6
+[81.4s] T0(obj): 看偶寫字 (Puppet Writing)
+[81.5s] TB#1: 看偶寫字 (Puppet Writing) RT=0.13s
+[81.5s] Gazing Stage 6 Score=2 Added=YES
+[81.6s] TH#1: 看偶寫字 (Puppet Writing) +0.23s
+[88.2s] TB#2: 看偶寫字 (Puppet Writing)
+[88.2s] Gazing Stage 6 Score=2 Added=NO
+[91.4s] TH#2: 看偶寫字 (Puppet Writing)
+[91.9s] TB#3: 看偶寫字 (Puppet Writing)
+[91.9s] Gazing Stage 6 Score=2 Added=NO
+[92.6s] Gazing Stage 6 Score=2 Added=NO
+[94.8s] Gazing Stage 6 Score=2 Added=NO
+[101.1s] Gazing Stage 6 Score=2 Added=NO
+[107.0s] Gazing Stage 6 Score=2 Added=NO
+[110.8s] TH#3: 看偶寫字 (Puppet Writing)
+[116.2s] Stage change -> 7
+[118.0s] T0(obj): 開箱驚喜袋(Mystery Bag)
+[125.2s] TB#1: 開箱驚喜袋(Mystery Bag) RT=7.2s
+[125.2s] Gazing Stage 7 Score=3 Added=YES
+[127.5s] TH#1: 開箱驚喜袋(Mystery Bag) +9.5s
+[128.3s] TB#2: 開箱驚喜袋(Mystery Bag)
+[128.3s] Gazing Stage 7 Score=3 Added=NO
+[129.8s] TH#2: 開箱驚喜袋(Mystery Bag)
+[130.4s] TB#3: 開箱驚喜袋(Mystery Bag)
+[130.4s] Gazing Stage 7 Score=3 Added=NO
+[131.9s] TH#3: 開箱驚喜袋(Mystery Bag)
+[135.7s] TB#4: 開箱驚喜袋(Mystery Bag)
+[135.7s] Gazing Stage 7 Score=3 Added=NO
+[136.9s] TH#4: 開箱驚喜袋(Mystery Bag)
+[142.0s] TB#5: 開箱驚喜袋(Mystery Bag)
+[142.0s] Gazing Stage 7 Score=3 Added=NO
+[144.2s] Gazing Stage 7 Score=3 Added=NO
+[145.1s] Gazing Stage 7 Score=3 Added=NO
+[145.9s] TH#5: 開箱驚喜袋(Mystery Bag)
+[146.0s] TB#6: 開箱驚喜袋(Mystery Bag)
+[146.0s] Gazing Stage 7 Score=3 Added=NO
+[147.1s] Gazing Stage 7 Score=3 Added=NO
+[149.2s] TH#6: 開箱驚喜袋(Mystery Bag)
+[149.9s] TB#7: 開箱驚喜袋(Mystery Bag)
+[149.9s] Gazing Stage 7 Score=3 Added=NO
+[150.4s] Gazing Stage 7 Score=3 Added=NO
+[151.2s] TH#7: 開箱驚喜袋(Mystery Bag)
+[157.4s] TB#8: 開箱驚喜袋(Mystery Bag)
+[157.4s] Gazing Stage 7 Score=3 Added=NO
+[157.7s] TH#8: 開箱驚喜袋(Mystery Bag)
+[159.3s] TB#9: 開箱驚喜袋(Mystery Bag)
+[159.3s] Gazing Stage 7 Score=3 Added=NO
+[161.7s] Gazing Stage 7 Score=3 Added=NO
+[162.6s] TH#9: 開箱驚喜袋(Mystery Bag)
+[165.0s] TB#10: 開箱驚喜袋(Mystery Bag)
+[165.0s] Gazing Stage 7 Score=3 Added=NO
+[167.0s] TH#10: 開箱驚喜袋(Mystery Bag)
+[167.8s] TB#11: 開箱驚喜袋(Mystery Bag)
+[167.8s] Gazing Stage 7 Score=3 Added=NO
+[169.9s] Gazing Stage 7 Score=3 Added=NO
+[170.5s] TH#11: 開箱驚喜袋(Mystery Bag)
+[171.0s] Stage change -> 8
+[171.0s] T0(noise): 手機怪聲(Strange Sound)
+[171.0s] Gazing Stage 8 Score=4 Added=YES
+[171.0s] Gaze hit Stage 8
+[171.2s] TH#1: 手機怪聲(Strange Sound) +0.24s
+[171.24s] Gaze@Tester P=0.4 Y=26.3
+[175.7s] TH#2: 手機怪聲(Strange Sound)
+[175.71s] Gaze@Tester P=18.9 Y=19.9
+[291.6s] Stage change -> 9
+[291.6s] T0: 機器人畫畫(Robot Drawing)
+[294.3s] TB#1: 機器人畫畫(Robot Drawing) RT=2.73s
+[294.3s] TH#1: 機器人畫畫(Robot Drawing) +2.73s
+[294.3s] Gaze hit Stage 9
+[294.93s] Gaze@Tester P=9.7 Y=12.1
+[307.0s] TB#2: 機器人畫畫(Robot Drawing)
+[308.9s] TH#2: 機器人畫畫(Robot Drawing)
+[309.6s] TB#3: 機器人畫畫(Robot Drawing)
+[310.4s] TH#3: 機器人畫畫(Robot Drawing)
+[312.0s] TB#4: 機器人畫畫(Robot Drawing)
+[317.6s] TH#4: 機器人畫畫(Robot Drawing)
+[317.62s] Gaze@Tester P=5.2 Y=5.3
+[319.5s] TB#5: 機器人畫畫(Robot Drawing)
+[319.5s] Gaze hit Stage 9
+[320.6s] Gazing Stage 9 Score=5 Added=YES
+[320.6s] Gaze hit Stage 9
+[320.65s] Gaze@Tester P=10.8 Y=14.2
+[322.0s] Gazing Stage 9 Score=5 Added=NO
+[322.0s] Gaze hit Stage 9
+[323.3s] Gazing Stage 9 Score=5 Added=NO
+[323.3s] Gaze hit Stage 9
+[327.0s] Stage change -> 10
+[326.9s] T0: 機器人煙火秀(Social Referencing)
+[327.69s] Gaze@Tester P=10.8 Y=11.6
+[336.8s] TB#1: 機器人煙火秀(Social Referencing) RT=9.88s
+[336.8s] Gazing Stage 10 Score=6 Added=YES
+[347.5s] Gazing Stage 10 Score=6 Added=NO
+[348.7s] Gazing Stage 10 Score=6 Added=NO
+[350.3s] Gazing Stage 10 Score=6 Added=NO
+[351.2s] Gazing Stage 10 Score=6 Added=NO
+[353.0s] Gazing Stage 10 Score=6 Added=NO
+[356.08s] Gaze@Tester P=-0.2 Y=-6.3
+[357.9s] Gazing Stage 10 Score=6 Added=NO
+[360.5s] Gazing Stage 10 Score=6 Added=NO
+
+========================================
+=== Whisper 語音辨識逐字稿 ===
+  共 30 段，快取檔：C:\Users\wayne\Desktop\project\integrate_v5\hurry\output\_speech_92\speech_cache.json
+========================================
+[0.00s ~ 0.82s]  什麼名字?
+[1.66s ~ 2.48s]  凱凱
+[2.48s ~ 3.96s]  好,凱凱
+[13.36s ~ 15.32s]  是凱旭嗎?
+[15.86s ~ 16.78s]  凱凱
+[16.78s ~ 18.26s]  凱凱,你好
+[18.98s ~ 20.00s]  凱凱你看  ← 關鍵字：你看
+[22.92s ~ 24.00s]  凱凱你看  ← 關鍵字：你看
+[27.62s ~ 28.18s]  看
+[28.18s ~ 28.86s]  看一看
+[84.00s ~ 85.70s]  歡迎你今天來玩
+[85.70s ~ 89.36s]  等等我會用筆寫一些字喔
+[94.82s ~ 95.58s]  掰掰
+[117.66s ~ 120.56s]  台台這裡有袋子裡面有玩具
+[120.56s ~ 123.40s]  你可以把它打開然後拿出來玩
+[170.00s ~ 173.98s]  请不吝点赞 订阅 转发 打赏支持明镜与点点栏目
+[231.38s ~ 232.78s]  把玩具放進袋子
+[286.54s ~ 288.68s]  小朋友
+[288.68s ~ 293.98s]  朋友 我要用平板画一幅特别的画  ← 關鍵字：画
+[301.82s ~ 304.14s]  画画画画  ← 關鍵字：画
+[317.36s ~ 319.08s]  画好了  ← 關鍵字：画
+[320.30s ~ 321.46s]  你看  ← 關鍵字：你看
+[324.70s ~ 328.00s]  等等我要放烟火了  ← 關鍵字：烟火
+[328.00s ~ 330.80s]  小朋友准备
+[330.80s ~ 334.60s]  3 2 1  ← 關鍵字：321, 三二一
+[353.24s ~ 357.24s]  你看 很漂亮吧  ← 關鍵字：你看
+[362.58s ~ 365.84s]  小朋友你看  ← 關鍵字：你看
+[365.84s ~ 370.84s]  小朋友你看  ← 關鍵字：你看
+[372.32s ~ 375.88s]  小朋友你看  ← 關鍵字：你看
+[375.88s ~ 380.70s]  小朋友你看  ← 關鍵字：你看
