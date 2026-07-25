@@ -97,7 +97,10 @@ class SpeechTrigger:
                         f"({cache_version} -> {EXPECTED_MATCHING_ALGORITHM_VERSION})"
                     )
                     raise ValueError("stale speech cache")
-                if cached_video_path != expected_video_path:
+                # 🌟 修正：Windows 路徑比對改用 os.path.normcase() 做大小寫不敏感比較，
+                # 避免磁碟機代號大小寫差異（c:\ vs C:\）導致快取被判定為「屬於其他影片」
+                # 而重新啟動 Whisper，連帶覆寫手動編輯過的快取（如 86 的怪聲時間點校正）
+                if os.path.normcase(cached_video_path) != os.path.normcase(expected_video_path):
                     print(
                         ">>> [SpeechTrigger] 快取屬於其他影片，重新啟動 Whisper 子行程 "
                         f"({cached_video_path or 'unknown'} -> {expected_video_path})"

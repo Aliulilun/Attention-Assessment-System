@@ -190,6 +190,10 @@ class ScoringEngine:
         self.event_logs = ["[SYSTEM] Scoring Version: " + str(scoring_version)]
         self.stage_transition_logs = []
         self.score_event_logs = []
+        # 🌟 新增：記錄各 Stage 實際計分結束時間
+        # Stage 1-7：由 handle_stage_change 傳入 time_sec（換牌 / 噪音觸發切換瞬間）
+        # Stage 8-10：由 create_trigger_record 的 end_time 欄位計算（T0+N秒 or 關鍵字+3s）
+        self.stage_end_times = {}
         self.trigger_event_records = []
         self.active_trigger_records = []
         self.you_look_trigger_windows = load_keyword_trigger_windows_from_cache(cache_path)
@@ -225,13 +229,23 @@ class ScoringEngine:
         self.stage_gaze_buffer = []
 
     def _build_absolute_timeline(self):
+        # 🌟 新增：預先計算 Stage 9 最早候選時間，作為 Stage 8 怪聲偵測的時間上限。
+        # 目的：防止煙火聲、掌聲等 Stage 9/10 音效被誤判為 Stage 8 的怪聲（假陽性）。
+        # Stage 8 怪聲在協定上必定發生在 Stage 9（畫畫指令）之前。
+        t9_all = []
+        for e in self.speech_events:
+            if any(k in e["text"] for k in ["畫", "画"]):
+                t9_all.append(e["start"])
+        t9_earliest = min(t9_all) if t9_all else float('inf')
+
         # Stage 8: 使用雜音事件 + 語音中明確命中「怪聲」關鍵字的事件
         # 🌟 修正：移除「機器人」避免將 Stage 9 之前的機器人登場誤判為 Stage 8 起點
         # 🌟 修正：改用精確比對已配對到的關鍵字（event["keywords"]），不再對整句轉錄
         # 文字做「聲音」/「声音」子字串搜尋。子字串比對會連同「[聲音]」這種泛用
         # 佔位關鍵字、甚至 Whisper 幻覺片段（例如把 initial_prompt 逐字複誦回來）
         # 一起誤判為 Stage 8 起點，且因為取 min() 只會讓起點被誤判得更早。
-        t8_cands = [e["start"] for e in self.noise_events]
+        # 🌟 修正：只採用發生在 Stage 9 最早候選之前的怪聲事件，排除假陽性
+        t8_cands = [e["start"] for e in self.noise_events if e["start"] < t9_earliest]
         for e in self.speech_events:
             if "怪聲" in e["keywords"]:
                 t8_cands.append(e["start"])
@@ -239,15 +253,12 @@ class ScoringEngine:
         t8 = min(t8_cands)
         if t8 < 10**9:
             self.stage_start_times[8] = t8
-            
+
         # Stage 9: 畫畫關鍵字（需在 Stage 8 之後）
         # 🌟 修改：加入順序防護回退——若「必須在 Stage 8 之後」的過濾
         # 把候選全部濾光（例如怪聲偵測時間偏晚、比畫畫關鍵字還後面），
         # 退回使用未過濾的候選，避免 Stage 9/10 整個消失、不切換也不記錄。
-        t9_all = []
-        for e in self.speech_events:
-            if any(k in e["text"] for k in ["畫", "画"]):
-                t9_all.append(e["start"])
+        # 🌟 複用上方預先計算的 t9_all（已含所有畫/画候選，無需重算）
         t9_cands = [t for t in t9_all if t >= (t8 if t8 < 10**9 else 0)]
         if not t9_cands and t9_all:
             t9_cands = list(t9_all)  # 🌟 回退：順序過濾撲空時改用全部候選
@@ -340,6 +351,12 @@ class ScoringEngine:
                 # else：連暫存資料都沒有（階段停留時間短於暫存起始秒數），
                 # 誠實留白，不編造沒有依據的 T0。
         self.stage_gaze_buffer = []
+
+        # 🌟 新增：記錄 previous_stage 的計分結束時間（換牌或噪音觸發切換的瞬間）
+        # Stage 7→8 沒有牌子切換，是由 noise.wav 命中觸發，此時 time_sec ≈ Stage 8 T0
+        if isinstance(previous_stage, int) and previous_stage > 0:
+            if previous_stage not in self.stage_end_times:
+                self.stage_end_times[previous_stage] = time_sec
 
         self.event_logs.append("[" + str(round(time_sec,1)) + "s] Stage change -> " + str(detected_stage))
         self.stage_transition_logs.append("[" + str(round(time_sec,1)) + "s] Stage " + str(detected_stage))
@@ -767,6 +784,19 @@ class ScoringEngine:
                 tb_s = "TB OK" if tb_ok else "TB --"
                 th_s = "TH OK" if th_ok else "TH --"
                 f.write("    Sequence = T0 -> " + pt_s + " -> " + tb_s + " -> " + th_s + "\n")
+                # 🌟 新增：計分結束時間
+                _stg = r["stage"]
+                if isinstance(_stg, int) and 1 <= _stg <= 7:
+                    # Stage 1-7：換牌 / 噪音觸發切換瞬間（Stage 7 的結束時間 = Stage 8 的 T0）
+                    _end_sec = self.stage_end_times.get(_stg)
+                    _end_str = (str(round(_end_sec, 2)) + "s") if _end_sec is not None else "未知"
+                elif isinstance(_stg, int) and _stg in [8, 9, 10]:
+                    # Stage 8/10：T0 + 10s；Stage 9：畫好了/你看 + 3s，找不到則 T0 + 15s
+                    _end_sec = r.get("end_time")  # 不用 default=0，避免 0 被誤判為合法時間
+                    _end_str = (str(round(_end_sec, 2)) + "s") if (_end_sec is not None and _end_sec < 10**8) else "未知"
+                else:
+                    _end_str = "未知"
+                f.write("    計分結束 = " + _end_str + "\n")
             f.write("\n" + "=" * 40 + "\n")
             f.write("=== Stage Gazing Stats ===\n")
             reported_stages = sorted(set(self.stage_gazing_counts.keys()) | set(self.scored_stages))

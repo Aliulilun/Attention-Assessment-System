@@ -23,17 +23,18 @@ def parse_gaze_log(file_path):
     event_log_text = parts[1] if len(parts) > 1 else ""
 
     # 定義 Stage Schema (新增 total分數，置於反應等級之前)
+    # 🌟 新增：計分結束時間欄位（Stage 1-7=換牌瞬間；8/10=T0+10s；9=畫好了+3s or T0+15s）
     stages_schema = {
-        1:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
-        2:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
-        3:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
-        4:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
-        5:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
-        6:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
-        7:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
-        8:  ['T0', 'TH', 'Pointing次數', 'TH次數', 'total分數', '反應等級'],  # 🌟 修改：Stage 8 指向特規（射線存在即計），加入 Pointing 次數欄
-        9:  ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級'],
-        10: ['T0', 'TB', 'TH', 'Pointing次數', 'TB次數', 'TH次數', 'total分數', '反應等級']
+        1:  ['T0', '計分結束時間', 'TB', 'TH', 'Pointing次數', '第一次Pointing', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        2:  ['T0', '計分結束時間', 'TB', 'TH', 'Pointing次數', '第一次Pointing', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        3:  ['T0', '計分結束時間', 'TB', 'TH', 'Pointing次數', '第一次Pointing', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        4:  ['T0', '計分結束時間', 'TB', 'TH', 'Pointing次數', '第一次Pointing', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        5:  ['T0', '計分結束時間', 'TB', 'TH', 'Pointing次數', '第一次Pointing', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        6:  ['T0', '計分結束時間', 'TB', 'TH', 'Pointing次數', '第一次Pointing', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        7:  ['T0', '計分結束時間', 'TB', 'TH', 'Pointing次數', '第一次Pointing', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        8:  ['T0', '計分結束時間', 'TH', 'Pointing次數', '第一次Pointing', 'TH次數', 'total分數', '反應等級'],  # 🌟 Stage 8 指向特規
+        9:  ['T0', '計分結束時間', 'TB', 'TH', 'Pointing次數', '第一次Pointing', 'TB次數', 'TH次數', 'total分數', '反應等級'],
+        10: ['T0', '計分結束時間', 'TB', 'TH', 'Pointing次數', '第一次Pointing', 'TB次數', 'TH次數', 'total分數', '反應等級']
     }
     
     row_data = {'影片編號': vid, '狀態': '完成'}
@@ -42,6 +43,8 @@ def parse_gaze_log(file_path):
         # 變數初始化，設定預設空值為 'x'
         level, total_score, t0, tb, th = 'x', 'x', 'x', 'x', 'x'
         pt_cnt, tb_cnt, th_cnt = 0, 0, 0
+        pt_first_time = 'x'  # 🌟 新增：第一次 Pointing 時間（無則 'x'）
+        score_end_time = 'x'  # 🌟 新增：計分結束時間
 
         # 更新後的正則表達式：同時捕獲等級 (group 1) 與分數 (group 2)
         # 範例匹配: 反應等級 LR(1分)
@@ -88,6 +91,14 @@ def parse_gaze_log(file_path):
                 if 'not detected' not in val.lower() and '--' not in val:
                     cnt_m = re.search(r'x(\d+)', val)
                     if cnt_m: pt_cnt = int(cnt_m.group(1))
+                    # 🌟 新增：提取第一次 Pointing 的絕對時間（格式：12.34s (+...from T0) x3）
+                    time_m = re.search(r'([\d.]+)s', val)
+                    if time_m: pt_first_time = time_m.group(1) + 's'
+
+            # 🌟 新增：計分結束時間（格式：計分結束 = 123.45s）
+            end_m = re.search(r'計分結束\s*=\s*([\d.]+)s', block)
+            if end_m:
+                score_end_time = end_m.group(1) + 's'
 
         # ----------------------------------------------------
         # 次級事件回溯邏輯 (Fallback Mechanism)
@@ -117,17 +128,21 @@ def parse_gaze_log(file_path):
         # ----------------------------------------------------
         if stage != 8:
             row_data[f'Stage{stage}_T0'] = t0
+            row_data[f'Stage{stage}_計分結束時間'] = score_end_time  # 🌟 新增
             row_data[f'Stage{stage}_TB'] = tb
             row_data[f'Stage{stage}_TH'] = th
             row_data[f'Stage{stage}_Pointing次數'] = pt_cnt
+            row_data[f'Stage{stage}_第一次Pointing'] = pt_first_time
             row_data[f'Stage{stage}_TB次數'] = tb_cnt
             row_data[f'Stage{stage}_TH次數'] = th_cnt
-            row_data[f'Stage{stage}_total分數'] = total_score # 依序插入分數
-            row_data[f'Stage{stage}_反應等級'] = level       # 最後插入等級
+            row_data[f'Stage{stage}_total分數'] = total_score
+            row_data[f'Stage{stage}_反應等級'] = level
         else: # Stage 8
             row_data[f'Stage{stage}_T0'] = t0
+            row_data[f'Stage{stage}_計分結束時間'] = score_end_time  # 🌟 新增
             row_data[f'Stage{stage}_TH'] = th
-            row_data[f'Stage{stage}_Pointing次數'] = pt_cnt  # 🌟 新增：指向次數（射線存在即計）
+            row_data[f'Stage{stage}_Pointing次數'] = pt_cnt
+            row_data[f'Stage{stage}_第一次Pointing'] = pt_first_time
             row_data[f'Stage{stage}_TH次數'] = th_cnt
             row_data[f'Stage{stage}_total分數'] = total_score
             row_data[f'Stage{stage}_反應等級'] = level
@@ -252,7 +267,7 @@ def main():
     print(f"\n[Success] 資料轉換與排序處理完成！結果已存至:\n{output_path.resolve()}")
 
     # 🌟 新增：另存格式化 Excel（Stage 標題列 + 組間分隔欄），資料與 CSV 相同
-    xlsx_path = output_dir / "txt_資料統整.xlsx"
+    xlsx_path = output_dir / "txt_資料統整_1.xlsx"
     try:
         write_formatted_excel(df, xlsx_path)
         print(f"[Success] 格式化 Excel（含 Stage 標題與分隔）已存至:\n{xlsx_path.resolve()}")
