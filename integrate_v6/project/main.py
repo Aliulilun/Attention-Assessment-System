@@ -397,9 +397,11 @@ def main():
                 if frame_count % 100 == 0:
                     print(f"⚠️ 偵測跳過 (Frame {frame_count}): {e}")
 
-            # 🌟 新增：Stage 8 指向特規——怪聲題沒有目標物，
-            # 小朋友的指向射線存在即算 Pointing（不需指中物品）
-            if current_stage == 8 and interaction.last_child_pointing_active:
+            # 🌟 修改（P0-2）：Stage 8 指向特規——怪聲題沒有目標物，
+            # 改用嚴格版旗標 last_child_pointing_stable：
+            # 需連續 >= S8_MIN_DWELL_FRAMES 幀（≈0.33s）且方向偏差 < 25°，
+            # 排除幼兒驚訝抬手 / 遮耳 / 隨機掃動等非指向動作。
+            if current_stage == 8 and interaction.last_child_pointing_stable:
                 child_is_pointing_hit = True
 
             # ==================================================

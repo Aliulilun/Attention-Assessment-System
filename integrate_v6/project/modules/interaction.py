@@ -41,6 +41,12 @@ class InteractionEngine:
         self.DWELL_FRAMES: int = dwell_frames
         self.divider_ratio: float = divider_ratio
         self.HOLD_FRAMES: int = hold_frames
+        # 🌟 新增（P0-2）：Stage 8 指向額外約束
+        # Stage 8（手機怪聲）沒有目標物，任何手部動作都可能誤觸。
+        # 要求連續幀數 >= S8_MIN_DWELL_FRAMES（約 0.33 秒@30fps）
+        # 且射線方向各幀偏差 < S8_DIR_STABLE_DEG，才視為有效指向。
+        self.S8_MIN_DWELL_FRAMES: int = 10    # 連續 10 幀（≈0.33s）
+        self.S8_DIR_STABLE_DEG: float = 25.0  # 方向偏差需 < 25°
 
         print(">>> [InteractionEngine] 載入人類骨架模型 (YOLO-Pose)...")
         if pose_model_path and os.path.exists(pose_model_path):
@@ -85,6 +91,10 @@ class InteractionEngine:
         # 🌟 新增：本幀「小朋友指向射線是否存在」（不看有沒有指中物品）
         # Stage 8（怪聲）的指向計分只需要射線存在即可，由 main 讀取此屬性
         self.last_child_pointing_active: bool = False
+        # 🌟 新增（P0-2）：Stage 8 嚴格版指向旗標
+        # 同時滿足：連續幀 >= S8_MIN_DWELL_FRAMES 且方向偏差 < S8_DIR_STABLE_DEG
+        # main.py / hurry/main.py 在 Stage 8 應改用此屬性
+        self.last_child_pointing_stable: bool = False
         self._ts_base: int = 0  # 🌟 新增：批次模式跨影片 elapsed_ms 基準偏移
 
         self.C_CHILD: Tuple[int, int, int] = (0, 255, 0)
@@ -300,13 +310,51 @@ class InteractionEngine:
         box_h = float(box[3] - box[1])
         return max(float(np.hypot(box_w, box_h)) * 0.3, 1.0)
 
+    def _is_ray_dir_stable(self, owner: str, max_deg: float = 25.0) -> bool:
+        """🌟 新增（P0-2）：檢查 ray_history 中各幀射線方向是否穩定。
+        計算所有歷史向量與其均值向量的夾角，若最大偏差 < max_deg 回傳 True。
+        歷史向量少於 2 筆時（剛開始指向）直接回傳 False，避免單幀誤判。
+        """
+        vecs = list(self.ray_history[owner]["vector"])
+        if len(vecs) < 2:
+            return False
+        norms = [np.linalg.norm(v) for v in vecs]
+        if any(n < 1e-6 for n in norms):
+            return False
+        units = [v / n for v, n in zip(vecs, norms)]
+        mean_vec = np.mean(units, axis=0)
+        mean_norm = np.linalg.norm(mean_vec)
+        if mean_norm < 1e-6:
+            return False
+        mean_unit = mean_vec / mean_norm
+        # 計算每個向量與均值的夾角（弧度 → 角度）
+        for u in units:
+            cos_a = float(np.clip(np.dot(u, mean_unit), -1.0, 1.0))
+            angle_deg = math.degrees(math.acos(cos_a))
+            if angle_deg > max_deg:
+                return False
+        return True
+
     @staticmethod
-    def ray_intersects_box(origin: Tuple[float, float], dir_vec: np.ndarray, box: Tuple[float, float, float, float]) -> bool:
+    def ray_intersects_box(
+        origin: Tuple[float, float],
+        dir_vec: np.ndarray,
+        box: Tuple[float, float, float, float],
+        max_t: Optional[float] = None,
+    ) -> bool:
+        """Ray-AABB 碰撞檢測。
+        🌟 新增（P0-3）：max_t 參數限制射線有效長度（像素單位），
+        防止「指向近處，射線在影像上穿過遠端物件框」的誤命中。
+        呼叫端傳入 max_t = 0.6 × 畫面對角線。
+        """
         ox, oy = origin; dx, dy = dir_vec; x1, y1, x2, y2 = box
         dx = dx if dx != 0 else 1e-9; dy = dy if dy != 0 else 1e-9
         tx1, tx2 = (x1 - ox) / dx, (x2 - ox) / dx
         ty1, ty2 = (y1 - oy) / dy, (y2 - oy) / dy
         tmin = max(min(tx1, tx2), min(ty1, ty2)); tmax = min(max(tx1, tx2), max(ty1, ty2))
+        # 🌟 新增（P0-3）：套用射線長度上限
+        if max_t is not None:
+            tmax = min(tmax, max_t)
         return bool(tmax >= max(0, tmin))
 
     def draw_dashed_rectangle(self, img: np.ndarray, pt1: Tuple[int, int], pt2: Tuple[int, int], color: Tuple[int, int, int], thickness: int = 1) -> None:
@@ -574,7 +622,8 @@ class InteractionEngine:
         }
         self.track_owner_votes  = {}
         self.hand_owner_tracks = []  # 跨影片清空手部歸屬追蹤器
-        self.last_child_pointing_active = False  # 跨影片重置
+        self.last_child_pointing_active  = False  # 跨影片重置
+        self.last_child_pointing_stable  = False  # 🌟 新增（P0-2）：跨影片重置
         print(">>> [InteractionEngine] tracking 狀態已重置")
 
     def analyze_interaction(self, frame: np.ndarray, yolo_boxes: List[Tuple[float, float, float, float]], elapsed_ms: Optional[int] = None) -> bool:
@@ -894,6 +943,12 @@ class InteractionEngine:
                 if self.hold_counters[owner] > 0:
                     # 短暫掉偵測：進入 hold 緩衝，保留射線歷史，不清空
                     self.hold_counters[owner] -= 1
+                    # 🌟 修改（P0-1）：中斷即歸零 dwell。
+                    # 原本 dwell 在 hold 期間不歸零，導致零星閃爍可透過 hold 緩衝
+                    # 慢慢「累積」到 DWELL_FRAMES 門檻，讓不連續的偵測被算成有效指向。
+                    # 修正後：hold 只保留射線（供平滑顯示），不保留 dwell 計數，
+                    # 必須重新連續達到 DWELL_FRAMES 幀才能再次觸發。
+                    self.dwell_counters[owner] = 0
                 else:
                     # 緩衝耗盡 → 指向動作真正結束，重置
                     self.dwell_counters[owner] = 0
@@ -905,27 +960,62 @@ class InteractionEngine:
 
         # 🌟 新增：記錄「小朋友指向射線存在」訊號（與是否指中物品無關）
         # 供 Stage 8 等「只要有指的動作就計分」的關卡使用
-        self.last_child_pointing_active = (
+        child_ray_active = (
             "Child" in pointing_owners and len(self.ray_history["Child"]["vector"]) > 0
         )
+        self.last_child_pointing_active = child_ray_active
 
+        # 🌟 新增（P0-2）：Stage 8 嚴格版旗標
+        # 在 last_child_pointing_active 基礎上加兩道篩選：
+        #   1. 連續幀數 >= S8_MIN_DWELL_FRAMES（排除短暫驚訝反應）
+        #   2. 射線方向穩定（排除隨機掃動）
+        if child_ray_active:
+            dir_stable = self._is_ray_dir_stable("Child", max_deg=self.S8_DIR_STABLE_DEG)
+            dwell_ok   = self.dwell_counters["Child"] >= self.S8_MIN_DWELL_FRAMES
+            self.last_child_pointing_stable = dir_stable and dwell_ok
+        else:
+            self.last_child_pointing_stable = False
+
+        # ============================================================
+        # 🌟 修改（視覺分離）：射線繪圖與碰撞判定拆成兩個 Pass。
+        #
+        # Pass 1（繪圖）：只要 hold 緩衝尚在就保持射線可見。
+        #   P0-1 修正後 hold 期間 dwell 歸零、pointing_owners 不含此 owner，
+        #   原本射線在短暫掉偵測時會立刻消失造成視覺閃爍。
+        #   繪圖條件改為「hold > 0」，讓 hold 緩衝期間射線仍順暢顯示，
+        #   展示給臨床人員看時不會誤以為系統失效。
+        #
+        # Pass 2（碰撞）：嚴格依 pointing_owners（dwell >= DWELL_FRAMES）。
+        #   精準率與 P0-1 修正後完全一致，繪圖分離不引入任何新的假陽性。
+        # ============================================================
+
+        # ── Pass 1：視覺繪圖（hold 緩衝期間保持射線平滑可見）──
+        for owner in ["Tester", "Child"]:
+            if self.hold_counters[owner] > 0 and len(self.ray_history[owner]["vector"]) > 0:
+                avg_origin = np.mean(self.ray_history[owner]["origin"], axis=0)
+                avg_vector = self._robust_average_vector(list(self.ray_history[owner]["vector"]))
+                avg_ox, avg_oy = int(avg_origin[0]), int(avg_origin[1])
+                hand_color = self.C_CHILD if owner == "Child" else self.C_TESTER
+                if np.linalg.norm(avg_vector) > 0:
+                    unit_vec = avg_vector / np.linalg.norm(avg_vector)
+                    # 🌟 修復：射線長度 150 -> 1500（原截斷導致數字遺失）
+                    end_point = np.array([avg_ox, avg_oy]) + unit_vec * 1500
+                    self.draw_25d_laser(frame, (avg_ox, avg_oy), (int(end_point[0]), int(end_point[1])), hand_color)
+
+        # ── Pass 2：碰撞判定（pointing_owners 嚴格門檻）──
+        # 🌟 P0-3：射線有效長度上限 = 0.6 × 畫面對角線（計算一次，兩個 owner 共用）
+        max_ray_t = 0.6 * math.hypot(FRAME_W, FRAME_H)
         for owner in ["Tester", "Child"]:
             if owner in pointing_owners and len(self.ray_history[owner]["vector"]) > 0:
                 avg_origin = np.mean(self.ray_history[owner]["origin"], axis=0)
                 avg_vector = self._robust_average_vector(list(self.ray_history[owner]["vector"]))
                 avg_ox, avg_oy = int(avg_origin[0]), int(avg_origin[1])
                 hand_color = self.C_CHILD if owner == "Child" else self.C_TESTER
-
                 if np.linalg.norm(avg_vector) > 0:
                     unit_vec = avg_vector / np.linalg.norm(avg_vector)
-                    # 🌟 修復：射線長度 150 -> 1500（原截斷導致數字遺失）
-                    end_point = np.array([avg_ox, avg_oy]) + unit_vec * 1500
-
-                    self.draw_25d_laser(frame, (avg_ox, avg_oy), (int(end_point[0]), int(end_point[1])), hand_color)
-
                     for (yx1, yy1, yx2, yy2) in yolo_boxes:
                         exact_box = (yx1, yy1, yx2, yy2)
-                        if self.ray_intersects_box((avg_ox, avg_oy), unit_vec, exact_box):
+                        if self.ray_intersects_box((avg_ox, avg_oy), unit_vec, exact_box, max_t=max_ray_t):
                             if owner == "Tester":
                                 cv2.rectangle(frame, (int(yx1), int(yy1)), (int(yx2), int(yy2)), hand_color, 5)
                             elif owner == "Child":

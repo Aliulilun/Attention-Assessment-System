@@ -267,7 +267,7 @@ def main():
     print(f"\n[Success] 資料轉換與排序處理完成！結果已存至:\n{output_path.resolve()}")
 
     # 🌟 新增：另存格式化 Excel（Stage 標題列 + 組間分隔欄），資料與 CSV 相同
-    xlsx_path = output_dir / "txt_資料統整_1.xlsx"
+    xlsx_path = output_dir / "txt_資料統整_最新.xlsx"
     try:
         write_formatted_excel(df, xlsx_path)
         print(f"[Success] 格式化 Excel（含 Stage 標題與分隔）已存至:\n{xlsx_path.resolve()}")

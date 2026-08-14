@@ -31,38 +31,60 @@ def is_far_stage(label):
 
 
 def compute_stage_score(record):
-    """回傳 (total, level)。record 需含 tb / th / pointing_t / label 欄位。"""
-    tb_score = 1 if record.get("tb") is not None else 0
-    th_score = 2 if record.get("th") is not None else 0
-    pointing_score = 1 if record.get("pointing_t") is not None else 0
+    """回傳 (total, level)。record 需含 tb / th / pointing_t / label 欄位。
+
+    🌟 修改（P1-2）：由分數查表改為語意組合判定。
+    原本 total=2 對應 HI，但有兩種完全不同來源：
+      - TB=1, TH=0, Pointing=1 → 有看物、有指，但未看回人 → 不應是 HI
+      - TB=0, TH=1, Pointing=0 → 只看回人，無看物也無指 → 也不應是 HI
+    改用明確組合讓等級語意正確，並與 IJA（共同注意力）臨床定義對齊：
+      HI  = 指向（Pointing）AND 看回施測者（TH）—— 最高階主動分享
+      LI  = 看向物品（TB）AND 看回施測者（TH）AND 沒有指向 —— 視線交替
+      HR  = 遠物關卡且 total=1 —— 有基本反應但未主動
+      LR  = 其他關卡且 total=1 —— 低反應
+      F   = 無任何達成
+    """
+    tb  = record.get("tb")       is not None
+    th  = record.get("th")       is not None
+    pt  = record.get("pointing_t") is not None
+    tb_score      = 1 if tb else 0
+    th_score      = 2 if th else 0
+    pointing_score = 1 if pt else 0
     total = tb_score + th_score + pointing_score
 
     # ============================================================
-    # 🌟 新增：Stage 8（手機怪聲）特規等級判定
+    # Stage 8（手機怪聲）特規等級判定（邏輯不變，改用 pt/th bool）
     # 此題指向不需指中物品（射線存在即計），等級規則：
     #   出現指向（手指）→ HI
     #   僅偵測到 TH（轉頭看人）→ LI
     #   皆無 → F
     # ============================================================
     if record.get("stage") == 8:
-        if pointing_score:
+        if pt:
             level = "HI"
-        elif th_score:
+        elif th:
             level = "LI"
         else:
             level = "F"
         return total, level
 
-    if total == 0:
-        level = "F"
-    elif total == 1:
-        level = "HR" if is_far_stage(record.get("label")) else "LR"
-    elif total == 2:
+    # ============================================================
+    # 🌟 修改（P1-2）：其他 Stage 改為明確組合判定（取代分數查表）
+    # ============================================================
+    if pt and th:
+        # 指向 + 看回人 = 最高階主動分享（High Initiator）
         level = "HI"
-    elif total == 3:
+    elif tb and th:
+        # 看物 + 看回人、但無指向 = 視線交替主動（Low Initiator）
         level = "LI"
+    elif pt or tb:
+        # 只有看物或只有指向，但沒看回人
+        level = "HR" if is_far_stage(record.get("label")) else "LR"
+    elif th:
+        # 只看回人，未達主動分享（罕見組合）
+        level = "LR"
     else:
-        level = "HI"
+        level = "F"
 
     return total, level
 

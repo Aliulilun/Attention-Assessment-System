@@ -476,7 +476,10 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             # 存在」就算一次，不需要射線指中任何物品。
             # 其他階段維持原邏輯（射線必須命中目標物才算 Pointing Hit）。
             # ============================================================
-            if current_stage == 8 and interaction.last_child_pointing_active:
+            # 🌟 修改（P0-2）：改用嚴格版旗標 last_child_pointing_stable
+            # 需連續 >= S8_MIN_DWELL_FRAMES 幀（≈0.33s）且方向偏差 < 25°，
+            # 排除幼兒驚訝抬手 / 遮耳 / 隨機掃動等非指向動作。
+            if current_stage == 8 and interaction.last_child_pointing_stable:
                 child_is_pointing_hit = True
             _t_interaction += _time.perf_counter() - _t0  # 計時：Interaction 段結束
 
