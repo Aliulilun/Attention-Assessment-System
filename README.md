@@ -86,7 +86,7 @@ TB 1 分 ＋ TH 2 分 ＋ Pointing 1 分  →  0~4 分
 
 | 版本 | 大小 | 連結 |
 |------|------|------|
-| 免安裝完整版（含 Python 環境與全部模型權重）| 約 7~9 GB | **【https://drive.google.com/file/d/1qOrchtuMGub_8_92vS-ABmlk6YVw5xH6/view?usp=sharing】** |
+| 免安裝完整版（含 Python 環境與全部模型權重）| 約 7~9 GB | **【https://drive.google.com/file/d/1G-t9HCJylQFi3ZyJWaknVB8y4zSoyEEw/view?usp=sharing】** |
 
 
 ### 安裝與執行
@@ -183,12 +183,6 @@ C:\project\
 │   ├── files/                     #   放入要解析的 event_record txt
 │   └── output/                    #   輸出：txt_資料統整.csv / .xlsx
 │
-├── docs/                          #   文件與分析報告
-│   ├── 環境安裝說明.md
-│   ├── 人工-AI視線差異分析.md
-│   ├── 人工-AI指向偵測差異分析.md
-│   ├── 人工-AI結果差異對照表.xlsx
-│   └── modify.md                  #   1-10 版的修改指南（已套用，保留供追溯）
 │
 ├── model/                         # AI 模型權重（不上傳 Git）
 │   ├── front_model.pt             #   Stage 1、2、11、12：近物
