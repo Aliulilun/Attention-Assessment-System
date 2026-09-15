@@ -1,0 +1,45 @@
+# ============================================================
+# requirements.in — 直接相依套件（Direct Dependencies）
+# 此檔僅列本專案「實際 import」的套件，不含傳遞相依。
+# 使用 pip-compile 產生鎖定版 requirements.txt：
+#   pip-compile requirements.in -o requirements.txt --no-emit-index-url
+#
+# ⚠️  PyTorch（CUDA 版）需單獨安裝，不列於此檔：
+#   pip install torch==2.7.1+cu118 torchaudio==2.7.1+cu118 torchvision==0.22.1+cu118 \
+#       --index-url https://download.pytorch.org/whl/cu118
+#
+# ⚠️  opencv-contrib-python 已包含所有 opencv-python 的功能（含 TrackerKCF）。
+#     兩者同時安裝會互相覆蓋，請確認環境中只留 contrib 版：
+#   pip uninstall opencv-python -y
+# ============================================================
+
+# ── 視覺 / 偵測 ─────────────────────────────────────────────
+opencv-contrib-python==4.13.0.92   # 含 TrackerKCF，不要另裝 opencv-python
+ultralytics==8.4.19                # YOLO v11
+mediapipe==0.10.35                 # FaceMesh / HandLandmarker
+easyocr==1.7.2                     # 牌子 OCR（allowlist 1-8）
+
+# ── 語音 ────────────────────────────────────────────────────
+openai-whisper==20250625           # Whisper large-v3（獨立子行程）
+sounddevice==0.5.2                 # 麥克風錄音 / 音訊串流
+tiktoken==0.12.0                   # Whisper tokenizer（whisper 內部相依）
+
+# ── 數值 / 資料 ──────────────────────────────────────────────
+numpy==2.0.2
+scipy==1.13.1
+pandas==2.3.3
+openpyxl==3.1.5                    # summarize.py 輸出 xlsx
+
+# ── 影像 / 影片 ──────────────────────────────────────────────
+pillow==11.3.0
+scikit-image==0.24.0
+moviepy==2.2.1                     # 音軌縫合（main.py 結尾）
+imageio==2.37.2
+imageio-ffmpeg==0.6.0
+
+# ── 設定 / 工具 ──────────────────────────────────────────────
+pyyaml==6.0.3                      # config.yaml 讀取
+matplotlib==3.9.4                  # gaze 視覺化 / debug 圖
+tqdm==4.67.1
+regex==2026.1.15
+requests==2.32.5
