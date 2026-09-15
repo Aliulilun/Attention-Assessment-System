@@ -1,0 +1,13 @@
+# Files exceeding GitHub's 100MB hard limit -- must stay ignored
+integrate_v7.5/project/release/env.tar.gz
+integrate_v7.5/project/release/assets/whisper/large-v3.pt
+integrate_v7.5/project/release/app/model/gaze/epoch_24_ckpt.pth.tar
+integrate_v7.5/project/model/gaze/epoch_24_ckpt.pth.tar
+integrate_v7.5/project/release/assets/EasyOCR/model/chinese.pth
+
+# Python bytecode cache (generated, not source)
+__pycache__/
+*.pyc
+
+# OS junk
+.DS_Store
