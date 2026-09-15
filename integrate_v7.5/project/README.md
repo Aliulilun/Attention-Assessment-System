@@ -12,6 +12,7 @@
 
 - [這套系統在做什麼](#這套系統在做什麼)
 - [三種使用方式](#三種使用方式)
+- [免安裝版下載](#免安裝版下載)
 - [專案目錄結構](#專案目錄結構)
 - [環境安裝](#環境安裝)
 - [執行方式](#執行方式)
@@ -76,6 +77,56 @@ TB 1 分 ＋ TH 2 分 ＋ Pointing 1 分  →  0~4 分
 
 ---
 
+## 免安裝版下載
+
+> **給只想跑分析、不需要改程式的使用者。**
+> 不需要安裝 Python、不需要 Anaconda、不需要另裝 CUDA Toolkit，解壓縮後雙擊即可執行。
+
+### 下載連結
+
+| 版本 | 大小 | 連結 |
+|------|------|------|
+| 免安裝完整版（含 Python 環境與全部模型權重）| 約 7~9 GB | **【https://drive.google.com/file/d/1qOrchtuMGub_8_92vS-ABmlk6YVw5xH6/view?usp=sharing】** |
+
+
+### 安裝與執行
+
+1. 解壓縮到**路徑不含中文**的資料夾，建議 `D:\attention` 或 `C:\attention`
+2. 雙擊 `START_UI.bat`
+3. 第一次執行會自動完成三件事，約 5~15 分鐘（畫面有進度訊息，請勿關閉視窗）：
+   解壓縮內含的 Python 環境 → `conda-unpack` 修正環境內路徑 → 安裝 Whisper / EasyOCR 模型快取
+4. 之後每次啟動只要 10~20 秒
+
+把要分析的影片放進 `app\hurry\video\`，結果會輸出到 `app\hurry\output\`。
+完整操作說明見壓縮檔內的 `README_FIRST.txt`。
+
+### 執行需求
+
+| 項目 | 需求 |
+|------|------|
+| 作業系統 | Windows 10 / 11（64 位元）|
+| 顯示卡 | NVIDIA 顯卡 + 最新驅動程式 |
+| 硬碟空間 | 至少 20 GB 可用空間 |
+| 網路 | 不需要（模型都已內含）|
+
+> ⚠️ **沒有 NVIDIA 顯卡**仍可開啟介面與檢視報表，但按「開始分析」會慢到不切實際
+> （一支 6 分鐘的影片可能要跑數小時）。
+>
+> ⚠️ **顯示記憶體不足**時語音辨識會自動改用 CPU，結果一樣正確但該段慢很多
+> （6 分鐘影片約 10~20 分鐘），主控台會明確提示。影像分析仍走 GPU 不受影響。
+
+### 這個發佈版不含什麼
+
+不含任何受試者影片或分析結果，`video` 與 `output` 資料夾都是空的。
+另請注意分析報告（`.txt`）會包含語音辨識的**完整逐字稿**，若處理臨床錄影，
+散布這些檔案前請確認符合所屬單位的研究倫理規範。
+
+> 💡 **開發者請往下看。** 若你要修改程式碼，請照下方「環境安裝」自行建立
+> `mediapipe_py39` 環境。免安裝版的 `release/` 是 `build_release.bat` 的打包產物，
+> 體積 7~9 GB 且已列入 `.gitignore`，不在 Git 倉庫中。
+
+---
+
 ## 專案目錄結構
 
 ```text
@@ -90,7 +141,7 @@ C:\project\
 ├── model_test.py                  # 本機 YOLO 模型快速測試
 ├── gpu_test.py                    # GPU / CUDA 環境確認腳本
 │
-├── ui/                            # ⭐ 圖形化介面（詳見 ui/檔案清單.md）
+├── ui/                            #   圖形化介面（詳見 ui/檔案清單.md）
 │   ├── app.py                     #   主視窗與四個頁籤的串接
 │   ├── run_ui.bat                 #   啟動器（ui\ 版）
 │   ├── qt_compat.py               #   PySide6 / PyQt5 相容層
@@ -132,7 +183,7 @@ C:\project\
 │   ├── files/                     #   放入要解析的 event_record txt
 │   └── output/                    #   輸出：txt_資料統整.csv / .xlsx
 │
-├── docs/                          # ⭐ 文件與分析報告
+├── docs/                          #   文件與分析報告
 │   ├── 環境安裝說明.md
 │   ├── 人工-AI視線差異分析.md
 │   ├── 人工-AI指向偵測差異分析.md
@@ -148,7 +199,7 @@ C:\project\
 │   ├── tablet_model.pt            #   Stage 9、10：平板
 │   ├── robot_model.pt             #   Stage 9+：機器人本體（TH 判定用）
 │   ├── yolo11n-pose.pt            #   人體姿態骨架
-│   ├── noisesample/noise.wav      #   ⭐ Stage 8 怪聲比對樣板
+│   ├── noisesample/noise.wav      #   Stage 8 怪聲比對樣板
 │   ├── signboardphoto/            #   Stage 7 牌子模板圖（7_1~7_4.png）
 │   └── gaze/
 │       ├── epoch_24_ckpt.pth.tar  #   ResNet-50 視線網路權重（~88MB）
@@ -417,20 +468,6 @@ Stage 2~4 維持 4 秒。
 - **推論與繪圖分離**：所有 AI 推論吃乾淨的 `frame`，所有視覺化畫在 `display_frame = frame.copy()`。
   違反此原則會造成模型互相污染（OCR 讀到 YOLO 框線、MediaPipe 特徵點偏移）
 - 影片、模型、輸出等大型檔案已列入 `.gitignore`
-
----
-
-## 文件索引
-
-| 文件 | 內容 |
-|------|------|
-| [`CLAUDE.md`](CLAUDE.md) | 開發規範、各關卡 T0/TB/TH 判定規格、環境注意事項、核心詞彙表 |
-| [`ui/README_UI.md`](ui/README_UI.md) | 圖形化介面的安裝、操作與報告展示流程 |
-| [`ui/檔案清單.md`](ui/檔案清單.md) | 介面各檔案職責、對既有程式的改動紀錄 |
-| [`docs/環境安裝說明.md`](docs/環境安裝說明.md) | 在新電腦上重建執行環境的逐步說明 |
-| [`docs/人工-AI視線差異分析.md`](docs/人工-AI視線差異分析.md) | TB / TH / HI 的人工標記與 AI 判定差異統計（70 位幼兒）|
-| [`docs/人工-AI指向偵測差異分析.md`](docs/人工-AI指向偵測差異分析.md) | 指向偵測誤差來源分析（633 筆） |
-| [`docs/modify.md`](docs/modify.md) | 1-10 版的修改指南（已套用，保留供追溯） |
 
 ---
 
