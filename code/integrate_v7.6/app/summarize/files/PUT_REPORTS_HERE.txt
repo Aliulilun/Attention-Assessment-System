@@ -1,0 +1,1 @@
+Put event_record .txt files here, then run summarize.py 
