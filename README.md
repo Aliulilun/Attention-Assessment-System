@@ -15,7 +15,8 @@
 [![License](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
 > 整合電腦視覺、語音辨識與深度學習，自動化分析受測兒童在結構化測驗情境中的聯合注意力行為
 
-# 詳細系統操作說明請至以下連結位置查看：https://github.com/Aliulilun/Attention-Assessment-System/blob/main/project_final_v1/project/README.md
+# 詳細系統操作說明請至以下連結位置查看：
+https://github.com/Aliulilun/Attention-Assessment-System/blob/main/project_final_v1/project/README.md
 
 ---
 
