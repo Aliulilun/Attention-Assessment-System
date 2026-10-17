@@ -86,7 +86,7 @@ TB 1 分 ＋ TH 2 分 ＋ Pointing 1 分  →  0~4 分
 
 | 版本 | 大小 | 連結 |
 |------|------|------|
-| 免安裝完整版（含 Python 環境與全部模型權重）| 約 7~9 GB | **【https://drive.google.com/file/d/1G-t9HCJylQFi3ZyJWaknVB8y4zSoyEEw/view?usp=sharing】** |
+| 免安裝完整版（含 Python 環境與全部模型權重）| 約 7~9 GB | **【https://drive.google.com/file/d/1Klhe3Hado-MYYkffj6Gj4ZgR5xU1yseI/view?usp=sharing】** |
 
 
 ### 安裝與執行
