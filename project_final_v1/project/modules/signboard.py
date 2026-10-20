@@ -45,6 +45,23 @@ class SignboardTracker:
         self.RECENTER_MAX    = 10   # 黃框置中上限：單幀位移超過此值視為異常，忽略
         self.no_detect_frames   = 0   # 連續未偵測到數字的幀數（計數器）
         self.NO_DETECT_FALLBACK = 25  # 達到此幀數後觸發應急框（重設至 ROI 中心 1.5 倍）
+        # ============================================================
+        # 🌟 新增（P4-1）：sign 框過期就不要再畫
+        #
+        # 問題：last_valid_box 只會被「偵測成功」覆寫，永遠不會被清掉。
+        # 一旦牌子離開畫面（例如 Stage 8 由 noise.wav 觸發，桌上根本沒有
+        # 「8」的牌子）或 KCF 追丟，draw_boxes 仍會無條件把最後一次的框
+        # 畫在原地，變成一個停在錯誤位置的綠框。
+        #
+        # 實測（90.mp4 t=176.3s，Stage 8）：綠框飄在窗簾上，離真正的
+        # 牌子很遠。目前不影響判定（判定看的是 OCR 結果不是這個框），
+        # 但畫面會誤導判讀，日後若有人拿這個框去做別的事就會出錯。
+        #
+        # 修正：超過這個幀數沒偵測到牌子，就不畫綠框，改在黃色掃描框
+        # 旁標示「Sign:N?」表示牌子目前定位不到。純繪圖層改動，
+        # 不碰 last_valid_box 本身，也不影響任何判定路徑。
+        # ============================================================
+        self.SIGN_BOX_STALE_FRAMES = 25  # 與 NO_DETECT_FALLBACK 同值，兩者可分開調
         self._fallback_active     = False  # 是否正在應急框模式（遲滯防閃爍）
         self.FALLBACK_EXIT_STREAK = 3      # 連續幾次 OCR 成功才退出應急框
         self._fallback_exit_count = 0      # 當前連續 OCR 成功次數（退出計數器）
@@ -390,6 +407,25 @@ class SignboardTracker:
         self.frame_counter += 1
         self.no_detect_frames += 1
 
+        # ============================================================
+        # 🌟 新增（P4-2）：牌子久未偵測到，主動清掉殘留的追蹤狀態
+        #
+        # last_valid_box 原本只會被「偵測成功」覆寫、永遠不會失效，
+        # 造成三個問題（P4-1 只處理了第一個的顯示面）：
+        #   1. draw_boxes 把舊框畫在錯誤位置（已由 P4-1 擋下顯示）
+        #   2. 步驟 2 的黃框置中會持續把掃描框拉向那個舊位置
+        #   3. 步驟 9 的 force_full_scan 重錨，每 FULL_SCAN_INTERVAL 幀
+        #      就把掃描框拉回舊位置——**反而阻止系統重新找到牌子**。
+        #      Stage 7 不會進應急模式，這條路徑在 Stage 7 一直有效。
+        # 另外 KCF tracker 在牌子已經離開畫面後仍會繼續「追」著背景跑，
+        # 是框飄走的直接來源。
+        #
+        # 清掉之後的行為：use_tracking 轉 False → OCR 改掃整個 ROI，
+        # 這正是找不到牌子時該有的動作。偵測成功時 last_valid_box 由
+        # OCR bbox 直接重建（步驟 6/7），不依賴舊值，所以復原不受影響。
+        # ============================================================
+        self._expire_stale_sign_state()
+
         # ── 1. KCF 追蹤更新（每幀）────────────────────────────────────────────
         # 在 OCR 跳幀期間持續更新 sign 框位置；含三道過濾：外觀相似度、大幅誤跳、微抖動死區
         if self.tracker is not None:
@@ -590,15 +626,49 @@ class SignboardTracker:
 
         return detected_stage
 
+    def _expire_stale_sign_state(self) -> bool:
+        """🌟 新增（P4-2）：牌子久未偵測到時清掉殘留的追蹤狀態。
+
+        回傳這一幀是否真的清掉了東西（供測試與除錯使用）。
+        抽成獨立方法是為了能在不載入 EasyOCR／不跑整支影片的情況下
+        直接測到這段邏輯本身，而不是測它的複製品。
+        """
+        if self.last_valid_box is None:
+            return False
+        if self.no_detect_frames < self.SIGN_BOX_STALE_FRAMES:
+            return False
+        self.last_valid_box   = None
+        self.tracker          = None
+        self._appear_snapshot = None
+        self._low_sim_streak  = 0
+        return True
+
+    def is_sign_box_stale(self) -> bool:
+        """🌟 新增（P4-1）：last_valid_box 是否已經過期（久未真正偵測到牌子）。
+
+        no_detect_frames 每幀遞增、只有偵測成功才歸零，因此它就是
+        「距離上次真的看到牌子過了幾幀」。純查詢，不改任何狀態。
+        """
+        return (self.last_valid_box is None
+                or self.no_detect_frames >= self.SIGN_BOX_STALE_FRAMES)
+
     def draw_boxes(self, frame, current_stage):
         """繪製黃色掃描框與綠色 sign 框"""
         cx1, cy1, cx2, cy2 = self.current_crop_coords
         if cx2 > cx1 and cy2 > cy1:
             cv2.rectangle(frame, (cx1, cy1), (cx2, cy2), (0, 255, 255), 2)
 
-        if self.last_valid_box is not None:
-            bx, by, bw, bh = self.last_valid_box
-            cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
-            cv2.putText(frame, f"Sign:{current_stage}",
-                        (bx, max(10, by - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        # 🌟 修改（P4-1）：框過期就不畫，改在黃框左上標示定位不到，
+        # 避免一個停在錯誤位置的綠框誤導判讀。
+        if self.is_sign_box_stale():
+            if cx2 > cx1 and cy2 > cy1:
+                cv2.putText(frame, f"Sign:{current_stage}?",
+                            (cx1, max(10, cy1 - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 200), 2)
+            return
+
+        bx, by, bw, bh = self.last_valid_box
+        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
+        cv2.putText(frame, f"Sign:{current_stage}",
+                    (bx, max(10, by - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)

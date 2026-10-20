@@ -49,6 +49,100 @@ class InteractionEngine:
         self.S8_DIR_STABLE_DEG: float = 25.0  # 方向偏差需 < 25°
 
         # ============================================================
+        # 🌟 新增（P1-3）：全關卡指向命中的方向穩定性門檻
+        #
+        # 背景：P0-2 只把 _is_ray_dir_stable() 接到 Stage 8 的
+        # last_child_pointing_stable 上，其餘所有關卡的命中判定
+        # （analyze_interaction 的回傳值 child_hit_target）仍然只看
+        # 「dwell >= DWELL_FRAMES 且射線碰到 YOLO 框」，沒有任何
+        # 方向穩定性要求。
+        #
+        # 後果：小朋友揮手／手臂橫掃時，is_valid_pointing 每幀都判定
+        # 「食指伸出、其餘彎曲」→ dwell 持續累加。但 dwell 證明的只是
+        # 「手勢維持住了」，完全沒有證明「手臂有穩定瞄準某處」。
+        # Pass 2 取 _robust_average_vector()，它會留下中位數附近的那一
+        # 群向量再平均，所以掃動時仍然會生出一個看似合理、實際上由
+        # 「剛好聚在一起的那幾幀」決定的方向——它掃過哪個框就報哪個框。
+        #
+        # 修正：命中判定改為與 Stage 8 同一把尺——要求**所有**歷史幀
+        # 與均值的夾角都 < 門檻，也就是這個指向動作真的有停住。
+        # （_robust_average_vector 是「挑出主群」，_is_ray_dir_stable
+        #   是「確認沒有別群」，兩者互補，不是同一件事。）
+        # 門檻與 S8_DIR_STABLE_DEG 同值但獨立，兩者可分開調整
+        # （Stage 8 另外要求 dwell >= 10，族群不同）。
+        # ============================================================
+        self.POINTING_DIR_STABLE_DEG: float = 25.0  # 全關卡命中判定的方向偏差上限
+
+        # ============================================================
+        # 🌟 新增（P3-1）：「接觸或抓取不算指向」＋「瞄準要準」
+        #
+        # 背景：ray_intersects_box 的實際語意是
+        #   「瞄準誤差 <= 目標框相對手腕的角半徑」，
+        # 而角半徑由**手離物品多近**決定，不是由指向精度決定。
+        # 實測（49／52／87 三支，見下表）：
+        #
+        #   手到框心 726px → 角半徑 11°  → 要求瞄準 <=11°（真指向 17° 被漏掉）
+        #   手到框心 197px → 角半徑 62°  → 瞄準 57° 也算命中（誤報）
+        #   手到框心  91px → 角半徑 148° → 瞄準 142° 也算命中（誤報）
+        #
+        # 也就是手越靠近物品，判定越寬鬆；手貼在物品上時角半徑逼近
+        # 180°，任何方向都算命中。更嚴重的是：射線起點若落在框內，
+        # Ray-AABB 的 tmin < 0 會被 max(0, tmin) 夾成 0，tmax >= 0 恆
+        # 成立——**方向完全不參與運算**，手放在物品上必然回報命中。
+        #
+        # 這與「有接觸或抓取東西就不判斷指向」的判定原則正好相反。
+        #
+        # 修正：在 Ray-AABB 之外，另外加兩道與距離無關的條件——
+        #   1. 接觸否決：指尖或手腕落在框內、或指尖離框太近 → 不算
+        #   2. 瞄準閘  ：射線與「起點→框心」的夾角須 <= 門檻
+        # 兩道都是**額外限制**，只會移除命中、不會新增命中，
+        # 因此不可能製造出原本沒有的誤報。
+        # ============================================================
+        self.POINTING_AIM_MAX_DEG: float = 25.0
+        # 指尖到目標框的最短距離，至少要有幾倍「手掌尺度」（手腕→中指掌指關節）。
+        # 低於此值視為手已經碰到／抓著物品，不是在指它。
+        self.POINTING_MIN_GAP_SCALE: float = 0.25
+
+        # ============================================================
+        # 🌟 新增（P5-1）：雙手靠在一起時不判定指向
+        #
+        # 判定原則新增條款：兩隻手靠在一起就不算指向。涵蓋兩種情境：
+        #   (a) 小朋友自己雙手交握／互相把玩手指
+        #   (b) 施測者的手伸到小朋友的手附近
+        #
+        # 為什麼需要這道：MediaPipe 遇到兩隻貼在一起的手時，會把它們
+        # 擬合成**單一**骨架，產生幾何上完美的假指向——食指比中指突出
+        # 0.6~1.0 掌長、PIP 彎角 1.3°、瞄準誤差 3.6°，所有手勢閘門
+        # 全數通過。已在 87、90 兩支影片、六個片段確認同一模式。
+        #
+        # 為什麼不能用 MediaPipe 自己判：交握時它只回傳一隻手，
+        # 「兩手靠近」這件事在 hand landmark 層面看不到。必須改用
+        # YOLO-Pose 的手腕關鍵點（每個人各有左右腕）。
+        #
+        # 門檻取 0.8（單位：兒童肩寬）的實測依據：
+        #   交握片段     0.46 ~ 0.48
+        #   施測者手誤判 0.28 ~ 0.69
+        #   確認的真指向 1.23（p10 0.53）
+        #   摸鼻子/摸嘴巴 1.16 ~ 2.11（手確實分開，不該被擋）
+        # 模擬計次：87-S6 誤報 2 次 -> 0 次；42-S4 真指向 1 次 -> 1 次。
+        #
+        # ⚠️ 門檻不可取 0.5~0.6：實測會讓 87-S6 的計次反而從 2 升到 4。
+        # 部分否決會在命中訊號中切出空檔，空檔超過 POINTING_GAP_SEC
+        # 就把一次連續誤報裂解成多次。要嘛擋乾淨、要嘛不要擋。
+        #
+        # 量不到手腕關鍵點時一律放行（fail-open）——無法量測不等於
+        # 雙手靠近，擋下去只會製造漏偵。代價是姿勢不清楚的片段擋不到
+        # （實測 90 號影片的三段交握，手腕信心全部低於 0.4）。
+        # ============================================================
+        self.POINTING_HANDS_APART_MIN: float = 0.8
+        # 本幀兒童的手是否與另一隻手（自己的另一手或施測者的手）靠太近
+        self.last_hands_too_close: bool = False
+        # 本幀兒童食指尖座標與手掌尺度，供 resolve_child_pointing_hit 做接觸判定。
+        # 每幀由 analyze_interaction 更新；沒有有效手勢時為 None。
+        self.last_pointing_tip: Dict[str, Optional[Tuple[int, int]]] = {"Child": None, "Tester": None}
+        self.last_pointing_scale: Dict[str, float] = {"Child": 0.0, "Tester": 0.0}
+
+        # ============================================================
         # 🌟 新增（B2）：跳幀補償
         # dwell_counters 是「analyze_interaction 被呼叫幾次」，不是影片幀數。
         # 主迴圈只在 frame_count % YOLO_SKIP == 0 時呼叫本函式，所以
@@ -474,13 +568,23 @@ class InteractionEngine:
         dir_vec: np.ndarray,
         box: Tuple[float, float, float, float],
         max_t: Optional[float] = None,
+        reject_origin_inside: bool = True,
     ) -> bool:
         """Ray-AABB 碰撞檢測。
         🌟 新增（P0-3）：max_t 參數限制射線有效長度（像素單位），
         防止「指向近處，射線在影像上穿過遠端物件框」的誤命中。
         呼叫端傳入 max_t = 0.6 × 畫面對角線。
+
+        🌟 新增（P3-1）：reject_origin_inside——起點落在框內時直接回傳 False。
+        原本起點在框內時 tmin < 0，被 max(0, tmin) 夾成 0，於是 tmax >= 0
+        恆成立，**方向完全不參與運算**，回傳值永遠是 True。實測 52 號影片
+        Stage 7 的 4 個命中幀全部是這種情形（食指實際指向物品的反方向，
+        夾角 142°）。這種幾何代表「手放在／伸進物品上」，依判定原則屬於
+        接觸而非指向，應當否決而不是必定命中。
         """
         ox, oy = origin; dx, dy = dir_vec; x1, y1, x2, y2 = box
+        if reject_origin_inside and x1 <= ox <= x2 and y1 <= oy <= y2:
+            return False
         dx = dx if dx != 0 else 1e-9; dy = dy if dy != 0 else 1e-9
         tx1, tx2 = (x1 - ox) / dx, (x2 - ox) / dx
         ty1, ty2 = (y1 - oy) / dy, (y2 - oy) / dy
@@ -758,6 +862,10 @@ class InteractionEngine:
         self.last_child_pointing_active  = False  # 跨影片重置
         self.last_child_pointing_stable  = False  # 🌟 新增（P0-2）：跨影片重置
         self.last_tester_head_box        = None   # 🌟 新增（A1）：跨影片重置
+        # 🌟 新增（P3-1）：跨影片重置指尖快取
+        self.last_pointing_tip   = {"Child": None, "Tester": None}
+        self.last_pointing_scale = {"Child": 0.0, "Tester": 0.0}
+        self.last_hands_too_close = False  # 🌟 新增（P5-1）：跨影片重置
         print(">>> [InteractionEngine] tracking 狀態已重置")
 
     def analyze_interaction(self, frame: np.ndarray, yolo_boxes: List[Tuple[float, float, float, float]], elapsed_ms: Optional[int] = None) -> bool:
@@ -766,6 +874,13 @@ class InteractionEngine:
         child_hit_target = False
         # 🌟 新增（A1）：每幀先歸零，稍後在人物去重完成後重新計算
         self.last_tester_head_box = None
+        # 🌟 新增（P3-1）：每幀先清空指尖快取，避免沿用上一幀的位置做接觸判定。
+        # （射線歷史有 hold 緩衝會跨幀保留，指尖位置不能跟著沿用——
+        #   手已經移開時再用舊指尖判斷「有沒有碰到」會得到錯的答案。）
+        self.last_pointing_tip = {"Child": None, "Tester": None}
+        self.last_pointing_scale = {"Child": 0.0, "Tester": 0.0}
+        # 🌟 新增（P5-1）：每幀先放行，稍後在人物去重完成後重算
+        self.last_hands_too_close = False
 
         # 🌟 新增（問題1）：每幀老化手部歸屬 track
         self._age_hand_tracks()
@@ -846,6 +961,10 @@ class InteractionEngine:
 
             # 🌟 新增（A1）：去重之後才算頭部框，確保取到的是真人而非幽靈偵測
             self.last_tester_head_box = self._compute_head_box(yolo_people, "Tester")
+
+            # 🌟 新增（P5-1）：同樣在去重之後才算雙手距離，
+            # 否則幽靈人物的假手腕會讓距離無故變小、誤擋真指向。
+            self.last_hands_too_close = self.compute_hands_too_close(yolo_people)
 
             # 存在旗標與繪製（只針對去重後的真人）
             for person in yolo_people:
@@ -1060,6 +1179,14 @@ class InteractionEngine:
                     continue
 
                 current_frame_pointing[best_owner] = True
+                # 🌟 新增（P3-1）：記下食指尖與手掌尺度，供 Pass 2 的接觸判定使用。
+                # 手掌尺度 = 手腕→中指掌指關節，與 is_valid_pointing 內的 scale 同一把尺。
+                self.last_pointing_tip[best_owner] = p_idx
+                self.last_pointing_scale[best_owner] = self._hand_scale(
+                    np.array([hand_landmarks_list[self.WRIST].x * FRAME_W,
+                              hand_landmarks_list[self.WRIST].y * FRAME_H]),
+                    np.array([hand_landmarks_list[self.MID_MCP].x * FRAME_W,
+                              hand_landmarks_list[self.MID_MCP].y * FRAME_H]))
                 # 🌟 修改（問題4）：射線一律「手腕 → 食指尖」
                 # 方向 = 食指尖 - 手腕；起點也改為手腕（原為食指 MCP）
                 raw_vec = np.array(p_idx) - np.array(p_wri)
@@ -1153,23 +1280,171 @@ class InteractionEngine:
         # ── Pass 2：碰撞判定（pointing_owners 嚴格門檻）──
         # 🌟 P0-3：射線有效長度上限 = 0.6 × 畫面對角線（計算一次，兩個 owner 共用）
         max_ray_t = 0.6 * math.hypot(FRAME_W, FRAME_H)
-        for owner in ["Tester", "Child"]:
-            if owner in pointing_owners and len(self.ray_history[owner]["vector"]) > 0:
-                avg_origin = np.mean(self.ray_history[owner]["origin"], axis=0)
-                avg_vector = self._robust_average_vector(list(self.ray_history[owner]["vector"]))
-                avg_ox, avg_oy = int(avg_origin[0]), int(avg_origin[1])
-                hand_color = self.C_CHILD if owner == "Child" else self.C_TESTER
-                if np.linalg.norm(avg_vector) > 0:
-                    unit_vec = avg_vector / np.linalg.norm(avg_vector)
-                    for (yx1, yy1, yx2, yy2) in yolo_boxes:
-                        exact_box = (yx1, yy1, yx2, yy2)
-                        if self.ray_intersects_box((avg_ox, avg_oy), unit_vec, exact_box, max_t=max_ray_t):
-                            if owner == "Tester":
-                                cv2.rectangle(frame, (int(yx1), int(yy1)), (int(yx2), int(yy2)), hand_color, 5)
-                            elif owner == "Child":
-                                cv2.putText(frame, f"Child HIT!", (avg_ox, avg_oy - 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, hand_color, 3)
-                                cv2.rectangle(frame, (int(yx1), int(yy1)), (int(yx2), int(yy2)), hand_color, 5)
-                                child_hit_target = True
-                            break
+
+        # ── Tester：維持原邏輯（只畫框，不參與任何計分）──
+        if "Tester" in pointing_owners and len(self.ray_history["Tester"]["vector"]) > 0:
+            avg_origin = np.mean(self.ray_history["Tester"]["origin"], axis=0)
+            avg_vector = self._robust_average_vector(list(self.ray_history["Tester"]["vector"]))
+            avg_ox, avg_oy = int(avg_origin[0]), int(avg_origin[1])
+            if np.linalg.norm(avg_vector) > 0:
+                unit_vec = avg_vector / np.linalg.norm(avg_vector)
+                for (yx1, yy1, yx2, yy2) in yolo_boxes:
+                    if self.ray_intersects_box((avg_ox, avg_oy), unit_vec,
+                                               (yx1, yy1, yx2, yy2), max_t=max_ray_t):
+                        cv2.rectangle(frame, (int(yx1), int(yy1)), (int(yx2), int(yy2)),
+                                      self.C_TESTER, 5)
+                        break
+
+        # ── Child：判定抽到 resolve_child_pointing_hit()，這裡只負責繪圖 ──
+        # 🌟 修改（P1-3）：依 CLAUDE.md「推論與繪圖分離」原則，把唯一會影響
+        # 計分的那條判定拉成純運算方法，才有辦法在沒有 YOLO / MediaPipe
+        # 模型的情況下寫確定性單元測試（見 tests/test_pointing_stability.py）。
+        child_hit_target, hit_box, hit_origin, _ = self.resolve_child_pointing_hit(
+            pointing_owners, yolo_boxes, max_ray_t)
+        if child_hit_target and hit_box is not None and hit_origin is not None:
+            yx1, yy1, yx2, yy2 = hit_box
+            cv2.putText(frame, "Child HIT!", (hit_origin[0], hit_origin[1] - 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, self.C_CHILD, 3)
+            cv2.rectangle(frame, (int(yx1), int(yy1)), (int(yx2), int(yy2)), self.C_CHILD, 5)
 
         return child_hit_target
+
+    def resolve_child_pointing_hit(self, pointing_owners, yolo_boxes, max_ray_t):
+        """🌟 新增（P1-3）：小朋友「指向命中目標物」判定——純運算，不繪圖。
+
+        回傳 (hit, box, origin, unit_vec)：
+          hit      -- 是否命中（即 analyze_interaction 的回傳值）
+          box      -- 命中的那個 YOLO 框；未命中為 None
+          origin   -- 平滑後的射線起點 (x, y)；連射線都不成立時為 None
+          unit_vec -- 平滑後的射線單位向量；連射線都不成立時為 None
+
+        依序四道關卡，任一不過就不算命中：
+          1. dwell 已達門檻（"Child" in pointing_owners）
+          2. 射線歷史非空
+          3. 🌟 射線方向穩定（各幀與均值夾角 < POINTING_DIR_STABLE_DEG）
+          4. 平滑後的射線在 max_ray_t 長度內打中某個 YOLO 框
+
+        第 3 關是 P1-3 新增的。在此之前只有第 1 關的 dwell，而 dwell 只能
+        證明「食指伸出的手勢維持了幾幀」，不能證明「手臂有停住瞄準」——
+        揮手橫掃一樣能把 dwell 累滿，掃過哪個框就報哪個框。
+        Stage 8 早已用同一個 _is_ray_dir_stable() 擋這件事（P0-2），
+        其餘關卡一直沒有。
+        """
+        none4 = (False, None, None, None)
+        if "Child" not in pointing_owners:
+            return none4
+        # 🌟 新增（P5-1）：雙手靠在一起就不判定指向。
+        # 放在最前面：這是「這個手勢根本不該被視為指向」的否決，
+        # 與後面「射線有沒有打到東西」是不同層級的問題。
+        if self.last_hands_too_close:
+            return none4
+        # origin 與 vector 在 dwell 迴圈中成對 append，長度理應相同；
+        # 這裡兩個都檢查，是為了讓這個公開方法即使被單獨呼叫（單元測試、
+        # 未來其他呼叫端）也不會走進 np.mean([]) 產生 nan 起點。
+        if len(self.ray_history["Child"]["vector"]) == 0 \
+                or len(self.ray_history["Child"]["origin"]) == 0:
+            return none4
+        if not self._is_ray_dir_stable("Child", max_deg=self.POINTING_DIR_STABLE_DEG):
+            return none4
+
+        avg_origin = np.mean(self.ray_history["Child"]["origin"], axis=0)
+        avg_vector = self._robust_average_vector(list(self.ray_history["Child"]["vector"]))
+        if float(np.linalg.norm(avg_vector)) <= 0:
+            return none4
+        unit_vec = avg_vector / np.linalg.norm(avg_vector)
+        origin = (int(avg_origin[0]), int(avg_origin[1]))
+
+        for (yx1, yy1, yx2, yy2) in yolo_boxes:
+            exact_box = (yx1, yy1, yx2, yy2)
+            if not self.ray_intersects_box(origin, unit_vec, exact_box, max_t=max_ray_t):
+                continue
+            # 🌟 新增（P3-1）：第 5、6 關——接觸否決與瞄準閘
+            if self._is_touching_box(exact_box, origin):
+                continue
+            if self._aim_error_deg(origin, unit_vec, exact_box) > self.POINTING_AIM_MAX_DEG:
+                continue
+            return True, exact_box, origin, unit_vec
+        return False, None, origin, unit_vec
+
+    def _is_touching_box(self, box, origin, owner: str = "Child") -> bool:
+        """🌟 新增（P3-1）：判斷這隻手是否已經「碰到／抓著」這個框裡的東西。
+
+        依判定原則，有接觸或抓取就不算指向。三種情況皆視為接觸：
+          1. 射線起點（手腕）落在框內
+          2. 食指尖落在框內
+          3. 食指尖到框的最短距離 < POINTING_MIN_GAP_SCALE × 手掌尺度
+
+        第 3 條用「手掌尺度」而非固定像素，才能在小孩靠近／遠離鏡頭、
+        手在畫面上忽大忽小時維持同一個實際距離標準。
+
+        手掌尺度取不到（last_pointing_scale[owner] 為 0，例如這個方法被單獨呼叫
+        或該幀沒有更新）時，只做第 1、2 條的框內判定——無法量測不等於
+        判定為接觸，避免製造漏偵。
+        """
+        x1, y1, x2, y2 = box
+        ox, oy = origin
+        if x1 <= ox <= x2 and y1 <= oy <= y2:
+            return True
+        tip = self.last_pointing_tip.get(owner)
+        if tip is None:
+            return False
+        tx, ty = tip
+        if x1 <= tx <= x2 and y1 <= ty <= y2:
+            return True
+        scale = self.last_pointing_scale.get(owner, 0.0)
+        if scale <= 0:
+            return False
+        gap = float(np.hypot(max(x1 - tx, 0, tx - x2), max(y1 - ty, 0, ty - y2)))
+        return gap < self.POINTING_MIN_GAP_SCALE * scale
+
+    def compute_hands_too_close(self, yolo_people) -> bool:
+        """🌟 新增（P5-1）：兒童的手是否與另一隻手靠得太近。
+
+        量「兒童任一手腕 → 最近的另一隻手腕」的距離，除以兒童肩寬。
+        另一隻手腕包含：兒童自己的另一手、以及所有施測者的手。
+        低於 POINTING_HANDS_APART_MIN 視為雙手靠在一起，不判定指向。
+
+        關鍵點信心不足而量不到時回傳 False（放行）——
+        無法量測不等於雙手靠近，擋下去只會製造漏偵。
+        """
+        L_SH, R_SH, L_WR, R_WR = 5, 6, 9, 10
+        child, others = None, []
+        for p in (yolo_people or []):
+            kpts, confs = p.get("kpts"), p.get("confs")
+            if kpts is None or confs is None:
+                continue
+            wrists = [kpts[j] for j in (L_WR, R_WR) if confs[j] >= 0.4]
+            if p.get("owner") == "Child" and child is None:
+                if confs[L_SH] >= 0.4 and confs[R_SH] >= 0.4:
+                    shoulder = float(np.linalg.norm(kpts[L_SH] - kpts[R_SH]))
+                    if shoulder > 1e-6:
+                        child = (shoulder, wrists)
+                # 兒童的肩寬量不到就無從正規化，整道檢查放行
+            else:
+                others.extend(wrists)
+        if child is None:
+            return False
+        shoulder, child_wrists = child
+        if not child_wrists:
+            return False
+        # 兒童自己的另一手也算「另一隻手」
+        candidates = others + child_wrists
+        for a in child_wrists:
+            for b in candidates:
+                d = float(np.linalg.norm(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)))
+                if d < 1e-6:
+                    continue          # 同一個點，不是「另一隻手」
+                if d / shoulder < self.POINTING_HANDS_APART_MIN:
+                    return True
+        return False
+
+    def _aim_error_deg(self, origin, unit_vec, box) -> float:
+        """🌟 新增（P3-1）：射線方向與「起點→框心」方向的夾角（度）。
+
+        這是與距離無關的瞄準精度量測，用來取代 Ray-AABB 隱含的
+        「瞄準誤差 <= 目標框角半徑」——後者手越靠近物品越寬鬆。
+        """
+        cx = (box[0] + box[2]) / 2.0
+        cy = (box[1] + box[3]) / 2.0
+        to_center = np.array([cx - origin[0], cy - origin[1]], dtype=float)
+        return float(self.get_angle(unit_vec, to_center))

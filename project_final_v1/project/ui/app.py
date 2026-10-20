@@ -10,11 +10,12 @@
 
 或直接雙擊 C:\\project\\run_ui.bat
 
-四個頁面：
+五個頁面：
     1. 影片載入與參數設定
     2. 即時監測主畫面
     3. 單次結果報表
     4. 歷史統計與比較
+    5. 即時體驗（webcam 視線＋指向展示與反應小遊戲，程式在 ui/live/）
 
 介面本身不做任何分析判斷，所有計分都由 hurry/main.py 與 modules/ 負責，
 確保介面上的數字與命令列跑出來的完全一致。
@@ -62,13 +63,16 @@ from pages.setup_page import SetupPage                             # noqa: E402
 from pages.monitor_page import MonitorPage                         # noqa: E402
 from pages.report_page import ReportPage                           # noqa: E402
 from pages.history_page import HistoryPage                         # noqa: E402
+from live.live_page import LivePage                                # noqa: E402
 
 NAV_ITEMS = [
     ("1　影片載入與設定", "選擇影片、確認分析參數"),
     ("2　即時監測", "逐幀畫面與 T0 / TB / TH 即時判定"),
     ("3　單次結果報表", "本次分析的完整結果與圖表"),
     ("4　歷史統計比較", "跨受試者橫向比較與匯出"),
+    ("5　即時體驗", "鏡頭即時視線與指向展示、反應小遊戲"),
 ]
+LIVE_PAGE_INDEX = 4
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -104,7 +108,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.monitor_page = MonitorPage()
         self.report_page = ReportPage()
         self.history_page = HistoryPage()
-        for page in (self.setup_page, self.monitor_page, self.report_page, self.history_page):
+        self.live_page = LivePage()
+        for page in (self.setup_page, self.monitor_page, self.report_page, self.history_page,
+                     self.live_page):
             self.stack.addWidget(page)
         lay.addWidget(self.stack, 1)
         self.setCentralWidget(central)
@@ -162,6 +168,9 @@ class MainWindow(QtWidgets.QMainWindow):
         return bar
 
     def goto(self, index):
+        # 離開即時體驗頁就關鏡頭、釋放模型，不在背景空佔 GPU
+        if index != LIVE_PAGE_INDEX:
+            self.live_page.stop_camera()
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self.nav_buttons):
             btn.setChecked(i == index)
@@ -187,6 +196,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._batch_aborted = False
         self._last_output_dir = settings["output_dir"]
 
+        self.live_page.set_analysis_running(True)
         self.setup_page.set_running(True)
         self.goto(1)
         if len(self._queue) > 1:
@@ -260,6 +270,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QTimer.singleShot(0, self._run_next)
 
     def _finish_batch(self):
+        self.live_page.set_analysis_running(False)
         self.setup_page.set_running(False)
         self.setup_page.refresh_video_list()
         max_stage = self._queue_settings.get("max_stage", 10)
@@ -317,6 +328,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.worker.request_stop()
             # 給 pipeline 時間走完 finally（釋放 VideoWriter、縫合音軌、寫報告）
             self.worker.wait(15000)
+        self.live_page.stop_camera(wait=True)
         pipeline_api.release_components()
         event.accept()
 

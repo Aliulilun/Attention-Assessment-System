@@ -25,7 +25,10 @@ from modules.gaze_estimation import GazeEstimationPipeline
 from modules.gaze_estimation.visualization import draw_gaze_with_face_box  
 
 # 導入時序有限狀態機管理員
-from modules.gaze_estimation.state_manager import GazeFSMManager 
+from modules.gaze_estimation.state_manager import GazeFSMManager
+
+# 🌟 A4 修正（2026-09-15）：導入視線遲滯追蹤器
+from modules.gaze_hold import GazeHoldTracker
 
 # ==========================================
 # 🌟 視線-物體交集判定函數 (Ray Casting)
@@ -270,18 +273,45 @@ def main():
     MAX_GAZE_RAY_LEN = 0.6 * math.hypot(frame_w, frame_h)
 
     # 🌟 新增（A1）：TH 判定用的施測者頭部框外擴比例
-    # 語意同 expand_box() 的 ratio——各邊各外擴「框尺寸 × 此比例」。
-    #   0.0 = 只用頭部框本身（最嚴格，最貼合「看臉」的臨床定義）
-    #   0.3 = 各邊外擴 30%（目前值）
+    #   0.0 = 只用頭部框本身（最嚴格）；0.3 = 各邊外擴 30%（目前值）
     # ⚠️ 2026-09-14 教訓：第一版用 0.8，施測者靠近鏡頭時框大到吃掉
     # 畫面左半邊，造成 Stage 1/2 假陽性暴增。
     # 對【判定框】而言「保守」的方向是小、不是大。
-    TESTER_HEAD_EXPAND = 0.3
+    #
+    # 🌟 A1 再調校（2026-09-16）：0.3 太嚴格，經隔離診斷確認是 104-S7、
+    # 82-S1、86-S2 三處 TH 消失的根本原因（頭部框每幀都算得出來，
+    # 但涵蓋不到視線射線實際指向的位置）。改成 0.6，已在 hurry/main.py
+    # 驗證：82-S1 恢復、42/52 的 Stage 3 已知假陽性沒有惡化；
+    # 104-S7、86-S2 仍未恢復。
+    #
+    # 🌟 A1 三度調校（2026-09-16，診斷 8+9）：進一步逐幀記錄後發現
+    # 剩餘的 49-S8、82-S8、86-S2、90-S4、104-S7 五處要分兩類看：
+    #   - 49-S8、82-S8、90-S4：角度門檻（pitch/yaw）本來就常常通過，
+    #     純粹是框太小接不到已經對準的射線，事後重算證實放大到 1.0
+    #     倍能救回過半未命中幀（49: 66%、82: 55%、90: 100%）。
+    #   - 86-S2、104-S7：問題根本不在框大小——這兩處絕大多數幀
+    #     （86: 99.2%、104: 98.4%）連角度門檻本身都過不了，框再怎麼
+    #     放大都無關，是視線估計模型的方向準確度問題，不是本次
+    #     參數調校能解決的範圍（見問題清單 1-5）。
+    # 因此把 0.6 調到 1.0（面積約 9 倍，超過 v1 那次造成假陽性暴增的
+    # 0.8=6.76 倍——但 v1 當時角度門檻還沒加進去，這次是在角度門檻
+    # 已存在、且已證實能擋掉方向錯誤的假命中之後才調整，風險性質
+    # 不同）。
+    #
+    # 🌟 診斷 10 實測結果（2026-09-16，已定案）：8 支影片完整驗證
+    # 通過——49-S8、82-S8、86-S2 三處修復成功（86-S2 是預期外的額外
+    # 修復），無新增假陽性（64-S1 正確維持被抑制）。90-S4、104-S7
+    # 如預期仍未修復，證實是視線角度估計模型本身的準確度問題，
+    # 超出框大小這個機制的能力範圍。完整驗證數據見
+    # release/app/.superpowers/sdd/2026-09-15-scoring-engine-fixes/
+    # diagnostics/diag10_expand10_validation_result.md。
+    TESTER_HEAD_EXPAND = 1.0
 
     # 🌟 迴圈外：視線容錯快取與計數器（推論與繪圖分離用）
     last_valid_gaze = None        # 只存 success=True 的最近一筆視線結果
     gaze_fallback_counter = 0     # 連續失敗幀數計數器
-    MAX_GAZE_FALLBACK = 5         # 超過此值才清空 last_valid_gaze（防閃爍）
+    MAX_GAZE_FALLBACK = 3         # 🌟 A6 修正（2026-09-15）：原值 5 高於視線報告建議的 2~3，
+                                  # 縮短容忍幀數以減少閃爍容忍期間吃到錯誤視線的機會
 
     # ==================================================
     # 🌟 新增：視線「命中判定」防閃爍三件套
@@ -295,8 +325,9 @@ def main():
     gaze_ray_history = deque(maxlen=5)   # (left_eye, right_eye, gaze_vector)
     GAZE_BOX_MARGIN = 0.10
     GAZE_HIT_HOLD_FRAMES = 10
-    gaze_obj_hold = 0     # 看物品的遲滯倒數
-    gaze_tester_hold = 0  # 看人/機器人的遲滯倒數
+    # 🌟 A4 修正（2026-09-15）：改用 GazeHoldTracker，讓「看物品」與「看施測者」
+    # 兩側的遲滯互相打斷，避免同一時間戳被同時判定成立（見 modules/gaze_hold.py）
+    gaze_hold_tracker = GazeHoldTracker(hold_frames=GAZE_HIT_HOLD_FRAMES)
 
     print("\n>>> [系統] 開始進入主分析迴圈...")
     try:
@@ -320,6 +351,7 @@ def main():
                 if detected_stage is not None and detected_stage <= 7:
                     if detected_stage != current_stage:
                         scoring.handle_stage_change(current_stage, detected_stage, current_time_sec)
+                        gaze_hold_tracker.reset()  # 🌟 A5 修正：避免上一關最後的遲滯狀態帶進新階段
                         current_stage = detected_stage
 
             # B. 絕對時間軸推進 (自動對齊 ScoringEngine 設定)
@@ -333,6 +365,7 @@ def main():
             if expected_stage > current_stage:
                 print(f"\n>>> [時間軸推進] {current_time_sec:.1f}s 系統強制推進至 第 {expected_stage} 階段")
                 scoring.handle_stage_change(current_stage, expected_stage, current_time_sec)
+                gaze_hold_tracker.reset()  # 🌟 A5 修正：避免上一關最後的遲滯狀態帶進新階段
                 current_stage = expected_stage
 
             # C. 聽覺代償機制 (階段 7 -> 8)
@@ -347,6 +380,7 @@ def main():
                         scoring.handle_stage_override(current_stage, 8, current_time_sec)
                     else:
                         scoring.handle_stage_change(current_stage, 8, current_time_sec)
+                    gaze_hold_tracker.reset()  # 🌟 A5 修正：避免上一關最後的遲滯狀態帶進新階段
                     current_stage = 8
 
             sign_tracker.draw_boxes(display_frame, current_stage)
@@ -563,19 +597,9 @@ def main():
             # 只有連續 GAZE_HIT_HOLD_FRAMES 幀真的沒命中才判定移開視線。
             # 開始時間不延遲 → TB/TH 反應時間（RT）不受影響。
             # ==================================================
-            if raw_gaze_obj:
-                gaze_obj_hold = GAZE_HIT_HOLD_FRAMES
-                child_is_gazing_at = True
-            elif gaze_obj_hold > 0:
-                gaze_obj_hold -= 1
-                child_is_gazing_at = True
-
-            if raw_gaze_tester:
-                gaze_tester_hold = GAZE_HIT_HOLD_FRAMES
-                child_is_gazing_at_tester = True
-            elif gaze_tester_hold > 0:
-                gaze_tester_hold -= 1
-                child_is_gazing_at_tester = True
+            child_is_gazing_at, child_is_gazing_at_tester = gaze_hold_tracker.update(
+                raw_gaze_obj, raw_gaze_tester
+            )
 
             # ==================================================
             # 🎨 繪圖區：視線箭頭、命中框（全畫在 display_frame）

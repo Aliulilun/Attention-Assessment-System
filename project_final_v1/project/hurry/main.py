@@ -11,6 +11,7 @@ import numpy as np
 import subprocess
 import yaml
 import torch  # 🌟 新增：用於 CUDA 狀態偵測與 VRAM 清理
+import datetime  # 🌟 新增：批次執行 log 檔案命名用時間戳
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 # 🌟 壓制 MediaPipe/glog 遙測上傳失敗的噪音 log（Clearcut uploader，與程式邏輯無關）
@@ -41,6 +42,7 @@ from modules.scoring_engine import ScoringEngine
 from modules.gaze_estimation import GazeEstimationPipeline
 from modules.gaze_estimation.visualization import draw_gaze_with_face_box
 from modules.gaze_estimation.state_manager import GazeFSMManager
+from modules.gaze_hold import GazeHoldTracker
 
 # ============================================================
 # ★ 全域設定
@@ -75,7 +77,44 @@ OCR_SKIP  = 5   # 🌟 核心修正 1：將 15 改為 5。降低 Tracker 防抖�
 # 再乘 0.8 外擴後整個框可以吃掉畫面左半邊（90 號 13.9s 實例），
 # 這是 Stage 1、2 假陽性暴增的主因。
 # ============================================================
-TESTER_HEAD_EXPAND = 0.3
+# 🌟 A1 再調校（2026-09-16）：0.3 太嚴格，經隔離診斷確認是 104-S7、
+# 82-S1、86-S2 三處 TH 消失的根本原因——加了除錯記錄後發現這三處
+# 頭部框每一幀都有算出來（從未回傳 None），但框的範圍沒有涵蓋到
+# 視線射線實際指向的位置，box_hit 持續為 False（104 甚至連續
+# 111.99s~117.6s 整整 5 秒都沒中）。屬於「框太小」而非「偵測失敗」。
+# 改成 0.6（面積約 4.84 倍，仍遠低於 v1 的 0.8=6.76 倍），先在
+# 104/82/86（待修）+ 42/52（Stage 3 已知假陽性，須確認沒有惡化）
+# 五支影片上驗證後才視為定案。
+#
+# 🌟 A1 三度調校（2026-09-16，診斷 8+9）：0.6 修復 82-S1/82-S7 後，
+# 仍有 49-S8、82-S8、86-S2、90-S4、104-S7 五處 TH 遺漏。診斷 8 逐幀
+# 記錄頭部框的 binding 來源，發現 scale_based（受
+# HEAD_SIZE_FROM_SHOULDER 控制）在絕大多數幀是決定框大小的因素；
+# 診斷 9 進一步對「角度門檻已通過（方向確認正確）但 box_hit=False」
+# 的幀做事後重算，測試把框放大到不同倍率時最小能命中的倍率
+# （minfix_ratio）。結果分成兩類、必須分開看待：
+#   - 49-S8、82-S8：角度門檻通過的幀數夠多（各 304、339 幀），
+#     其中未命中但可被「放大到 1.0」救回的比例最高（69/105、
+#     83/152，均 >50%），是唯一有實證支持「框太小」這個機制的案例。
+#   - 86-S2、90-S4、104-S7：問題根本不在框大小——這三處絕大多數
+#     幀（86: 119/120、104: 537/546）連角度門檻本身都過不了（視線
+#     估計的 pitch/yaw 方向本身就沒有指向施測者），框再怎麼放大
+#     都無關；少數幾幀通過門檻但需要 3~5 倍以上才能救回，屬於視線
+#     估計模型準確度的問題，不是本次參數調校能解決的範圍。
+# 因此把 0.6 調到 1.0（面積約 9 倍，已超過 v1 那次造成假陽性暴增的
+# 0.8=6.76 倍——但 v1 當時「角度門檻」根本還沒加進去，這次調整是在
+# 角度門檻已存在、且已被證實能擋住方向錯誤的假命中之後才做的，風險
+# 性質不同）。
+#
+# 🌟 診斷 10 實測結果（2026-09-16，已定案）：8 支影片（42/52/64 已知
+# 假陽性風險案例 + 49/82/86/90/104 待修案例）完整驗證通過——
+# **49-S8、82-S8、86-S2 三處修復成功**（86-S2 是原本預期外的額外
+# 修復），**無新增假陽性**（64-S1 正確維持被抑制）。90-S4、104-S7
+# 如預期仍未修復，證實是視線角度估計模型本身的準確度問題，超出框
+# 大小這個機制的能力範圍，不屬於本次參數調校可處理的範圍。
+# 完整驗證數據見 .superpowers/sdd/2026-09-15-scoring-engine-fixes/
+# diagnostics/diag10_expand10_validation_result.md。
+TESTER_HEAD_EXPAND = 1.0
 
 # ★ 怪聲參考音檔（放在 model/ 目錄，跨所有影片共用）
 # 🌟 修改：speech.py 新增 noise_sample_path 參數，此處明確傳入固定路徑；
@@ -294,7 +333,8 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
     # 🌟 視線容錯快取（推論與繪圖分離用）
     last_valid_gaze = None        # 只存 success=True 的最近一筆視線結果
     gaze_fallback_counter = 0     # 連續失敗幀數計數器
-    MAX_GAZE_FALLBACK = 5         # 超過此值才清空 last_valid_gaze（防閃爍）
+    MAX_GAZE_FALLBACK = 3         # 🌟 A6 修正（2026-09-15）：原值 5 高於視線報告建議的 2~3，
+                                  # 縮短容忍幀數以減少閃爍容忍期間吃到錯誤視線的機會
 
     # ==================================================
     # 🌟 新增：視線「命中判定」防閃爍三件套（與根目錄 main.py 同步）
@@ -310,8 +350,9 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
     gaze_ray_history = _deque(maxlen=5)   # (left_eye, right_eye, gaze_vector)
     GAZE_BOX_MARGIN = 0.10
     GAZE_HIT_HOLD_FRAMES = 10
-    gaze_obj_hold = 0     # 看物品的遲滯倒數
-    gaze_tester_hold = 0  # 看人/機器人的遲滯倒數
+    # 🌟 A4 修正（2026-09-15）：改用 GazeHoldTracker，讓「看物品」與「看施測者」
+    # 兩側的遲滯互相打斷，避免同一時間戳被同時判定成立（見 modules/gaze_hold.py）
+    gaze_hold_tracker = GazeHoldTracker(hold_frames=GAZE_HIT_HOLD_FRAMES)
 
     # 🌟 計時診斷（每 TIMING_REPORT_INTERVAL 幀印一次各段耗時，協助找瓶頸）
     import time as _time
@@ -398,6 +439,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     stage_transition_queue.pop(0)
                     print(f">>> [時間軸] {next_detected_time:.1f}s 推進至第 {next_stage} 階段")
                     scoring.handle_stage_change(current_stage, next_stage, next_detected_time)
+                    gaze_hold_tracker.reset()  # 🌟 A5 修正：避免上一關最後的遲滯狀態帶進新階段
                     current_stage = next_stage
                     pending_stage = current_stage  # 🌟 同步：A2 可能已推進 current_stage，避免 B 用到舊值
 
@@ -423,6 +465,7 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                 else:
                     print(f">>> [時間軸] {current_time_sec:.1f}s 推進至第 {pending_stage} 階段")
                     scoring.handle_stage_change(current_stage, pending_stage, current_time_sec)
+                    gaze_hold_tracker.reset()  # 🌟 A5 修正：避免上一關最後的遲滯狀態帶進新階段
                     current_stage = pending_stage
                     # 🌟 新增：語音驅動階段（8/9/10）同步 tracker 顯示，
                     # 讓畫面上的「Sign:N」與左上角 Stage 一致（純顯示同步，
@@ -442,8 +485,10 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     sign_tracker.force_stage(8)
                     if hasattr(scoring, 'handle_stage_override'):
                         scoring.handle_stage_override(current_stage, 8, current_time_sec)
+                        gaze_hold_tracker.reset()  # 🌟 A5 修正：避免上一關最後的遲滯狀態帶進新階段
                     else:
                         scoring.handle_stage_change(current_stage, 8, current_time_sec)
+                        gaze_hold_tracker.reset()  # 🌟 A5 修正：避免上一關最後的遲滯狀態帶進新階段
                     current_stage = 8
 
             # 🌟 修改：傳 sign_tracker.current_stage（tracker 實際讀到的數字）
@@ -544,6 +589,13 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
                     last_child_is_pointing_hit = interaction.analyze_interaction(display_frame, yolo_boxes, elapsed_ms=_elapsed_ms)
                 except Exception as _ia_err:
                     # MediaPipe 或 YOLO-Pose 臨時故障不中斷整影片，只印警告
+                    # 🌟 修正（P1-4）：例外時必須把快取歸零，不能沿用上一幀的結果。
+                    # 原本 last_child_is_pointing_hit 保持不變：若故障當下的值是
+                    # True，這個 True 會一路沿用到 analyze_interaction 下次成功為止。
+                    # scoring_engine 的 Pointing 走上升邊緣（_prev_pointing），
+                    # 訊號卡在 True 就永遠不會再有下降沿 → 這段期間內小朋友
+                    # 真正的指向動作一次都不會被計到（漏偵，非誤報）。
+                    last_child_is_pointing_hit = False
                     if frame_count % 100 == 0:
                         print(f"⚠️ analyze_interaction 跳過 (Frame {frame_count}): {_ia_err}")
             child_is_pointing_hit = last_child_is_pointing_hit  # 🌟 沿用快取結果（YOLO_SKIP 跳幀時保持穩定）
@@ -696,19 +748,9 @@ def process_single_video(video_path, output_dir, model_manager, interaction,
             # 只有連續 GAZE_HIT_HOLD_FRAMES 幀真的沒命中才判定移開視線。
             # 開始時間不延遲 → TB/TH 反應時間（RT）不受影響。
             # ==================================================
-            if raw_gaze_obj:
-                gaze_obj_hold = GAZE_HIT_HOLD_FRAMES
-                child_is_gazing_at = True
-            elif gaze_obj_hold > 0:
-                gaze_obj_hold -= 1
-                child_is_gazing_at = True
-
-            if raw_gaze_tester:
-                gaze_tester_hold = GAZE_HIT_HOLD_FRAMES
-                child_is_gazing_at_tester = True
-            elif gaze_tester_hold > 0:
-                gaze_tester_hold -= 1
-                child_is_gazing_at_tester = True
+            child_is_gazing_at, child_is_gazing_at_tester = gaze_hold_tracker.update(
+                raw_gaze_obj, raw_gaze_tester
+            )
 
             # ==================================================
             # 🎨 繪圖區：視線箭頭、命中框（全畫在 display_frame）
@@ -1118,8 +1160,158 @@ def prepare_speech_cache(video_path, output_dir):
     return speech_dir
 
 
+class _TeeStream:
+    """🌟 新增：把 stdout/stderr 同時寫進終端機（或無終端機時安靜略過）與 log 檔。
+
+    背景：批次跑很多支影片時，VRAM 清理量、OCR 警告、階段切換時間點等
+    只印在 console，一旦透過 UI（pythonw.exe，沒有附加終端機）執行，
+    這些診斷用的關鍵訊息就完全遺失，事後無法回溯（見 2026-09-21 111 號
+    未偵測案例的除錯經驗——原始批次沒有留下任何 log，只能用重跑但無法
+    保證重現的方式間接驗證）。改成每次跑批次都自動存檔，之後不管用
+    UI 還是命令列跑，都留得住完整紀錄。
+    """
+    def __init__(self, log_path):
+        self._log = open(log_path, "a", encoding="utf-8", buffering=1)
+        self._orig = None
+
+    def attach(self, orig_stream):
+        self._orig = orig_stream
+        return self
+
+    def detach(self):
+        """🌟 還原用：關閉 log 檔並回傳原始串流（同行程重複設定時清理）。"""
+        try:
+            self._log.close()
+        except Exception:
+            pass
+        return self._orig
+
+    # ============================================================
+    # 🌟 本地補強（合併 v8.1 時新增）：補齊檔案物件介面。
+    # 換掉 sys.stdout / sys.stderr 之後，第三方套件會來問這些屬性——
+    # tqdm（Whisper 進度條）問 isatty、ultralytics 問 encoding、
+    # subprocess 若把串流直接傳下去會問 fileno。原版沒有這些，
+    # 寬容的套件會用預設值帶過，嚴格的會直接 AttributeError。
+    # 一律轉交給原始串流，取不到就給安全的預設值。
+    # ============================================================
+    def isatty(self):
+        try:
+            return bool(self._orig is not None and self._orig.isatty())
+        except Exception:
+            return False
+
+    def fileno(self):
+        if self._orig is None:
+            raise OSError("_TeeStream 沒有底層 fileno")
+        return self._orig.fileno()
+
+    @property
+    def encoding(self):
+        return getattr(self._orig, "encoding", "utf-8")
+
+    @property
+    def errors(self):
+        return getattr(self._orig, "errors", None)
+
+    @property
+    def closed(self):
+        return getattr(self._log, "closed", False)
+
+    @property
+    def name(self):
+        return getattr(self._orig, "name", "<tee>")
+
+    @property
+    def buffer(self):
+        # 二進位寫入直接走原始串流（不進 log）。這是刻意的取捨：
+        # 讓 sys.stdout.buffer 可用，勝過因為沒有這個屬性直接炸掉。
+        return getattr(self._orig, "buffer")
+
+    def writable(self):
+        return True
+
+    def readable(self):
+        return False
+
+    def seekable(self):
+        return False
+
+    def write(self, data):
+        if self._orig is not None:
+            try:
+                self._orig.write(data)
+            except Exception:
+                pass
+        try:
+            self._log.write(data)
+        except Exception:
+            pass
+        # 標準串流的 write() 回傳寫入的字元數；回傳 None 會讓
+        # 依賴回傳值的呼叫端（少數 logging handler）出錯。
+        try:
+            return len(data)
+        except Exception:
+            return 0
+
+    def flush(self):
+        if self._orig is not None:
+            try:
+                self._orig.flush()
+            except Exception:
+                pass
+        try:
+            self._log.flush()
+        except Exception:
+            pass
+
+
+# 目前掛在 sys.stdout / sys.stderr 上的 Tee，重新設定時要先拆掉
+_RUN_LOG_TEES = []
+
+
+def _setup_run_log():
+    """🌟 新增：啟用本次批次執行的自動 log 存檔（stdout + stderr 都存）。
+
+    log 存到 output/_run_logs/run_<時間戳>.log，不管透過 CLI（python
+    hurry/main.py）還是 UI（pythonw.exe 呼叫 build_shared_components）
+    執行都會生效，因為兩條路徑都會呼叫這個函式所在的
+    build_shared_components()。失敗（例如目錄無法建立）不影響主流程，
+    只是這次沒有 log 可查。
+    """
+    global _RUN_LOG_TEES
+    try:
+        # ============================================================
+        # 🌟 本地補強（合併 v8.1 時新增）：先拆掉上一輪的 Tee。
+        # build_shared_components() 在同一個行程可能被呼叫多次（UI 連續
+        # 跑兩批）。若直接包在「目前的」sys.stdout 上，第二次會再疊一層
+        # Tee——舊的 log 檔會繼續收到新批次的輸出，而且舊檔 handle 永遠
+        # 不會釋放。改成先還原成原始串流並關檔，再重新包一層。
+        # ============================================================
+        for slot, tee in _RUN_LOG_TEES:
+            orig = tee.detach()
+            if orig is not None:
+                setattr(sys, slot, orig)
+        _RUN_LOG_TEES = []
+
+        log_dir = os.path.join(OUTPUT_DIR, "_run_logs")
+        os.makedirs(log_dir, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = os.path.join(log_dir, f"run_{ts}.log")
+        for slot in ("stdout", "stderr"):
+            tee = _TeeStream(log_path).attach(getattr(sys, slot))
+            setattr(sys, slot, tee)
+            _RUN_LOG_TEES.append((slot, tee))
+        print(f">>> 本次批次執行紀錄將同步存至：{log_path}")
+    except Exception as _log_err:
+        try:
+            print(f"⚠️ 批次 log 存檔設定失敗（{_log_err}），僅顯示於終端機")
+        except Exception:
+            pass
+
+
 def build_shared_components(config=None, model_dir=None, ocr_skip=None):
     """一次性載入所有重型 GPU 元件，回傳可跨影片重複使用的元件字典。"""
+    _setup_run_log()
     CONFIG   = config if config is not None else load_project_config()
     _mdir    = model_dir or MODEL_DIR
     _obj_cfg = CONFIG.get('object_detection', {}) if isinstance(CONFIG, dict) else {}
