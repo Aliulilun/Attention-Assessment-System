@@ -11,6 +11,27 @@ TB_COOLDOWN_SEC      = 1.5   # TB 兩次計次之間的最小間隔（秒）
 TH_COOLDOWN_SEC      = 1.5   # TH 兩次計次之間的最小間隔（秒）
 POINTING_COOLDOWN_SEC = 0.8  # Pointing 兩次計次之間的最小間隔（秒）
 
+# 🌟 新增（P3-2）：同一次持續指向的「中斷容許時間」（秒）
+#
+# 背景：原本只靠「上升邊緣 + 0.8 秒冷卻」判定是不是新的一次指向。
+# 但偵測訊號在一次持續指向中會斷斷續續（YOLO 掉框、MediaPipe 掉手、
+# 手勢瞬間不合格），每次恢復都是一個新的上升邊緣。只要斷點間隔超過
+# 0.8 秒就會重新計一次——實測 87 號影片 Stage 6 有一段連續 16 秒的
+# 指向，被切成 13 次。
+#
+# 修正：改成「訊號必須真正消失夠久，下一次才算新事件」。
+# 冷卻是「兩次計次的最小間隔」，這個是「兩次指向之間必須有多長的空檔」，
+# 兩者語意不同且互補，因此保留冷卻、另外加這一道。
+#
+# 取值依據（87 號影片 Stage 6，該段訊號共 22 個空檔）：
+#   20 個 <= 0.97 秒 ── 同一次指向動作中的掉偵測抖動
+#    1 個 = 1.67 秒   ── 難以判定
+#    1 個 = 4.93 秒   ── 確實是分開的兩次
+# 0.97 與 1.67 之間是一道明顯的空谷，門檻放在谷底兩側裕度最大。
+# 1.3 秒距最大抖動 0.33 秒、距最小真實空檔 0.37 秒。
+# 調大會開始合併真正分開的指向，調小則抖動會重新被算成多次。
+POINTING_GAP_SEC = 1.3
+
 # ==========================================
 # 🌟 新增：Whisper 幻覺過濾標記
 # Whisper 遇到聽不清的片段時，會把 initial_prompt 逐字複誦回來
@@ -27,7 +48,12 @@ HALLUCINATION_MARKERS = ["請勿忽略", "短促的聲音"]
 # 最慢近 20 秒才出現，4 秒門檻幾乎每支影片都會提早誤觸發，
 # 所以 Stage 1 另外給更寬鬆的門檻；Stage 2~4 銜接快，維持原值。
 FALLBACK_T0_DELAY_SEC = 4.0
-FALLBACK_T0_DELAY_SEC_STAGE1 = 15.0
+# 🌟 C4 修正（2026-09-15）：15 秒門檻與「你看」最慢近 20 秒才出現的
+# 關鍵字升級路徑互相打架——fallback 在關鍵字之前就建立，若期間已經
+# 計過 TB/TH，升級路徑的「三者皆為 None」條件就再也無法滿足，T0
+# 永久卡在 fallback 時間，該關 RT 全部失真。改成 22 秒，讓關鍵字有
+# 機會先到。
+FALLBACK_T0_DELAY_SEC_STAGE1 = 22.0
 
 # 🌟 新增：Stage 1 的暫存緩衝區延後這麼多秒才開始收集
 # 原因：Stage 1 進入前幾秒通常是問名字、寒暄，跟任務無關，
@@ -148,6 +174,8 @@ def create_trigger_record(label, stage, t0, end_time, tb_mode, th_mode):
         "_last_tb_time": -999.0,
         "_last_th_time": -999.0,
         "_last_pointing_time": -999.0,
+        # 🌟 新增（P3-2）：上一次「指向訊號為真」的時間，用來合併同一次持續指向
+        "_last_pointing_active_time": -999.0,
         # ============================================================
         # 🌟 新增：交替計次狀態
         # 記錄「上一次成功計次的目標」："object"（物品）或 "head"（人/機器人）。
@@ -250,8 +278,13 @@ class ScoringEngine:
         #      或先修正 speech_engine 讓單字關鍵字能被正確配對。
         #      兩者都會移動 T0，需連同 benchmark 重跑一起驗證。
         t9_all = []
+        # 🌟 C2 方向1 修正（2026-09-15）：裸字「畫/画」太容易被無關句子
+        # 誤觸發（例："這張圖畫得很漂亮"），改成語意明確的完整片語。
+        # 不能改用 e["keywords"] 精確比對——speech_engine 目前配對不到
+        # 單字關鍵字，keywords 欄位只會出現「你看」「看這裡」，改了
+        # Stage 9 會整關消失（見上方 C2 已撤回的紀錄）。
         for e in self.speech_events:
-            if any(k in e["text"] for k in ["畫", "画"]):
+            if any(k in e["text"] for k in ["畫一幅", "畫畫", "畫好了", "画一幅", "画画", "画好了"]):
                 t9_all.append(e["start"])
         t9_earliest = min(t9_all) if t9_all else float('inf')
 
@@ -291,8 +324,11 @@ class ScoringEngine:
         # 對整段轉錄做子字串比對之後再取 min()，幾乎必然抓到影片開頭的語音，
         # 導致整個 Stage 10 判定窗口（T0+10s）落在錯誤的時間點。
         t10_all = []
+        # 🌟 C2 方向1 修正（2026-09-15）：移除裸的「三」與「3」——這是 spec
+        # 點名最危險的一處，任何句子裡出現「三」或數字 3 都會誤觸發整個
+        # Stage 10 判定窗口（T0+10s）落在錯誤時間點。保留語意明確的詞彙。
         for e in self.speech_events:
-            if any(k in e["text"] for k in ["煙火", "烟火", "321", "三二一", "三", "3"]):
+            if any(k in e["text"] for k in ["煙火", "烟火", "321", "三二一"]):
                 t10_all.append(e["start"])
         t10_cands = [t for t in t10_all if t >= t10_base]
         if not t10_cands and t10_all:
@@ -588,7 +624,7 @@ class ScoringEngine:
         # 卻永遠建立不了 T0 → 整關漏記。
         # 進入階段超過等待秒數仍無紀錄，改以代償時間建立；之後關鍵字
         # 若補到，上方升級邏輯會把 t0 修正為關鍵字時間。
-        # Stage 1 前面通常有寒暄，等待秒數（15s）跟代償時間（進入+5.5s，
+        # Stage 1 前面通常有寒暄，等待秒數（22s）跟代償時間（進入+5.5s，
         # 對齊暫存起始點）都比 Stage 2~4（4s／進入時間）更寬鬆。
         # ============================================================
         if current_stage in [1, 2, 3, 4] and not already_active:
@@ -631,7 +667,10 @@ class ScoringEngine:
 
         # --- Pointing ---
         # 🌟 上升邊緣 + 冷卻：防止 YOLO 掉偵測造成同一次指向被重複計算
-        if child_is_pointing_hit and not record["_prev_pointing"]:
+        # 🌟 新增（P3-2）：訊號中斷未超過 POINTING_GAP_SEC 時，視為同一次持續指向的
+        # 抖動，不當成新事件。中斷夠久才算指向真的結束。
+        _pointing_resumed = (time_sec - record["_last_pointing_active_time"]) < POINTING_GAP_SEC
+        if child_is_pointing_hit and not record["_prev_pointing"] and not _pointing_resumed:
             if time_sec - record["_last_pointing_time"] > POINTING_COOLDOWN_SEC:
                 if record["pointing_t"] is None:
                     record["pointing_t"] = time_sec
@@ -641,6 +680,10 @@ class ScoringEngine:
                     record["pointing_count"] += 1
                     self.event_logs.append("[" + str(round(time_sec,1)) + "s] Pointing#" + str(record["pointing_count"]) + ": " + record["label"])
                 record["_last_pointing_time"] = time_sec
+        # 🌟 新增（P3-2）：訊號為真的每一幀都更新，中斷期間保持不動，
+        # 於是 (now - _last_pointing_active_time) 正好是「已經中斷多久」。
+        if child_is_pointing_hit:
+            record["_last_pointing_active_time"] = time_sec
         record["_prev_pointing"] = child_is_pointing_hit
 
         # --- TB ---

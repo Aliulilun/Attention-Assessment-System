@@ -30,6 +30,11 @@ event_record txt  ×  人工-AI結果差異對照表.xlsx  自動比對工具
     # 只看特定關卡
     python summarize\\compare_with_manual.py --txt-dir hurry\\output --stages 3 4
 
+    # 列出人工判定「有指向」的全部 (影片, 關卡)，取代手工維護的真陽性紅線
+    # （問題清單 V2 N1：舊清單手工維護時漏掉了 42-S9、90-S7 兩格）
+    python summarize\\compare_with_manual.py --list-manual-positives pt
+    python summarize\\compare_with_manual.py --list-manual-positives th --csv th_positives.csv
+
 輸出
 ----
 主控台摘要，另可用 --csv 匯出逐格明細（UTF-8-SIG，Excel 直接開）。
@@ -334,6 +339,23 @@ def _pct(v):
 # ============================================================
 # 四、主流程
 # ============================================================
+def list_manual_positives(manual, key, stages):
+    """回傳全部人工判定「有」的 (影片編號, 關卡) 清單，依編號、關卡排序。
+
+    問題清單 V2 的 N1：以前這份「真陽性紅線」是手工維護的（曾經漏掉
+    42-S9、90-S7 兩格），任何收緊判定的改動前都應該重新跑一次這裡，
+    而不是沿用手寫在文件裡的舊清單。
+    key 為 "tb" / "th" / "pt" / "hi"。
+    """
+    hits = []
+    for cid in sorted(manual):
+        for stage in stages:
+            v = manual[cid].get(stage, {}).get(key)
+            if v == 1:
+                hits.append((cid, stage))
+    return hits
+
+
 def evaluate(ai_data, manual, groups, stages):
     """回傳 {指標名稱: Confusion} 以及 ASD/TD 分組的 Pointing 混淆矩陣。"""
     overall = {"TB": Confusion(), "TH": Confusion(), "Pointing": Confusion()}
@@ -469,14 +491,20 @@ def write_csv(path, ai_data, manual, stages):
 def main():
     ap = argparse.ArgumentParser(
         description="event_record txt 與人工標記對照表的自動比對工具")
-    ap.add_argument("--txt-dir", required=True,
-                    help="要評估的 event_record 資料夾（例：hurry\\output）")
+    ap.add_argument("--txt-dir", default=None,
+                    help="要評估的 event_record 資料夾（例：hurry\\output）。"
+                         "使用 --list-manual-positives 時可省略")
     ap.add_argument("--baseline-dir", default=None,
                     help="修正前的資料夾，會一併評估以便前後對照")
     ap.add_argument("--xlsx", default=DEFAULT_XLSX, help="對照表路徑")
     ap.add_argument("--stages", type=int, nargs="+", default=STAGES,
                     help="只評估指定關卡，預設 1~10")
     ap.add_argument("--csv", default=None, help="輸出逐格明細 CSV 的路徑")
+    ap.add_argument("--list-manual-positives", default=None,
+                    choices=["tb", "th", "pt", "hi"],
+                    help="不比對 AI 結果，只列出人工判定「有」的 (影片, 關卡) 清單"
+                         "（自動產生真陽性紅線，取代手工維護，見問題清單 V2 N1）。"
+                         "指定後 --txt-dir 可省略")
     args = ap.parse_args()
 
     if not os.path.exists(args.xlsx):
@@ -495,6 +523,28 @@ def main():
     if missing:
         print("這些關卡在對照表中找不到欄位，將略過：%s" % missing)
         stages = [s for s in stages if s in colmap]
+
+    if args.list_manual_positives:
+        key = args.list_manual_positives
+        hits = list_manual_positives(manual, key, stages)
+        label = {"tb": "TB 看向物品", "th": "TH 看回人",
+                 "pt": "Pointing 指向", "hi": "HI 綜合等級"}[key]
+        print("")
+        print(">>> 人工判定「有%s」的全部案例（%d 格，全量 %d 位受試者）：" % (label, len(hits), len(manual)))
+        for cid, stage in hits:
+            print("    %3d - Stage %2d" % (cid, stage))
+        if args.csv:
+            with open(args.csv, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["影片編號", "Stage", "構念"])
+                for cid, stage in hits:
+                    w.writerow([cid, stage, label])
+            print(">>> 已輸出：%s" % args.csv)
+        return 0
+
+    if not args.txt_dir:
+        print("❌ 未指定 --list-manual-positives 時，--txt-dir 為必填")
+        return 1
 
     ai_data = load_txt_dir(args.txt_dir)
     print(">>> 讀取 AI 結果：%s（%d 份）" % (args.txt_dir, len(ai_data)))

@@ -5,12 +5,18 @@
 #   pip-compile requirements.in -o requirements.txt --no-emit-index-url
 #
 # ⚠️  PyTorch（CUDA 版）需單獨安裝，不列於此檔：
-#   pip install torch==2.7.1+cu118 torchaudio==2.7.1+cu118 torchvision==0.22.1+cu118 \
-#       --index-url https://download.pytorch.org/whl/cu118
+#   RTX 50 系列（Blackwell 架構）需要 CUDA 12.8+ 才能被偵測到，
+#   cu118 版本裝了也抓不到 GPU，請改用：
+#   pip install torch==2.8.0+cu128 torchaudio==2.8.0+cu128 torchvision==0.23.0+cu128 \
+#       --index-url https://download.pytorch.org/whl/cu128
 #
 # ⚠️  opencv-contrib-python 已包含所有 opencv-python 的功能（含 TrackerKCF）。
-#     兩者同時安裝會互相覆蓋，請確認環境中只留 contrib 版：
-#   pip uninstall opencv-python -y
+#     opencv-python / opencv-python-headless 三者同時安裝會共用 cv2 命名空間、
+#     互相覆蓋檔案，請確認環境中只留 contrib 版：
+#   pip uninstall opencv-python opencv-python-headless -y
+#
+# ⚠️  Qt 綁定（PySide6 或 PyQt5）需單獨安裝，不列於此檔（見 ui/qt_compat.py）：
+#   pip install PySide6
 # ============================================================
 
 # ── 視覺 / 偵測 ─────────────────────────────────────────────

@@ -1,0 +1,74 @@
+# ============================================================
+# 換行字元正規化設定
+# ------------------------------------------------------------
+# 背景：本地 C:\project 一律 LF，外部協作樹（integrate_v8.1）
+#       存成 CRLF。兩邊程式碼一字不差時，仍有 41 個檔案在
+#       diff 裡整份標成「已修改」，真正的改動會被淹沒。
+#
+# 對策：入庫（commit）一律轉成 LF；簽出（checkout）也保持 LF，
+#       不做 Windows 自動 CRLF 轉換，讓工作目錄與倉庫一致。
+#       例外：Windows 批次檔必須是 CRLF（見最下方）。
+# ============================================================
+
+# 預設：由 Git 自動偵測文字/二進位，文字一律 LF
+* text=auto eol=lf
+
+# ---------- 明確指定為文字（LF） ----------
+*.py       text eol=lf
+*.pyi      text eol=lf
+*.md       text eol=lf
+*.txt      text eol=lf
+*.csv      text eol=lf
+*.json     text eol=lf
+*.yaml     text eol=lf
+*.yml      text eol=lf
+*.cfg      text eol=lf
+*.ini      text eol=lf
+*.toml     text eol=lf
+*.in       text eol=lf
+*.sh       text eol=lf
+*.svg      text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+
+# ---------- 必須是 CRLF（Windows 直譯器要求） ----------
+# cmd.exe 解析 goto/label 時對 LF 行為不一致，啟動器會壞掉
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+*.ps1      text eol=crlf
+
+# ---------- 二進位：不得做任何換行轉換 ----------
+# 模型權重
+*.pt       binary
+*.pth      binary
+*.tar      binary
+*.onnx     binary
+*.h5       binary
+# 影音素材
+*.mp4      binary
+*.avi      binary
+*.mov      binary
+*.wav      binary
+*.mp3      binary
+# 圖片
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.bmp      binary
+*.ico      binary
+# 文件與壓縮
+*.xlsx     binary
+*.xls      binary
+*.docx     binary
+*.pdf      binary
+*.zip      binary
+*.7z       binary
+# 可執行檔與函式庫（ffmpeg.exe、附帶 Python 執行環境等）
+*.exe      binary
+*.dll      binary
+*.pyd      binary
+*.so       binary
+*.lib      binary
+*.ttf      binary
+*.otf      binary

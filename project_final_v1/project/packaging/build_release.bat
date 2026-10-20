@@ -60,9 +60,12 @@ REM  "output" also cover hurry\video and hurry\output. Clinical
 REM  recordings and existing analysis results never leave this box.
 REM  summarize\files and summarize\output are excluded by full path:
 REM  they hold ~70 reports containing full speech transcripts.
+REM  "output_*" also catches experiment folders such as
+REM  hurry\output_p5verify - they hold annotated child videos,
+REM  speech wav files and full transcripts.
 REM  Kept on ONE line on purpose - see the style rules above.
 echo [2/6] Copying source code and models...
-robocopy "%PROJECT_DIR%" "%OUT_DIR%\app" /E /NFL /NDL /NJH /NJS /NP /XD video output release packaging .git .vscode __pycache__ .venv "%PROJECT_DIR%\summarize\files" "%PROJECT_DIR%\summarize\output" /XF *.pyc groups.json speech_cache.json
+robocopy "%PROJECT_DIR%" "%OUT_DIR%\app" /E /NFL /NDL /NJH /NJS /NP /XD video output output_* release packaging .git .vscode __pycache__ .venv "%PROJECT_DIR%\summarize\files" "%PROJECT_DIR%\summarize\output" /XF *.pyc groups.json speech_cache.json
 
 if errorlevel 8 echo [ERROR] robocopy failed.
 if errorlevel 8 pause

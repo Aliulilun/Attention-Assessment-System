@@ -53,6 +53,15 @@ class GazeFSMManager:
                 self.last_valid_centroid = current_centroid
                 
             # 常規幾何空間量測
+            # 🌟 閾值澄清（2026-09-15，對應 spec A7 附帶發現）：這裡用 pitch < 0，
+            # 比下方 EXTREME_TURNING 進入條件的 last_pitch < 10 更嚴格。
+            # 兩者刻意不同：這裡是「正常追蹤期」的方向分類，只在人臉還能
+            # 穩定量測時使用；下方是「已經追丟人臉」時的最後一筆姿態回顧，
+            # 用來判斷要不要進入盲追蹤安全閥，故意放寬以涵蓋更多可能情境。
+            # 不要為了「一致性」把兩者改成同一個值——A7 的實驗教訓是收緊
+            # 這一整條補償機制的任何嘗試都會先傷到真陽性（代償觸發的時機
+            # 與小朋友真的轉頭看人高度重疊），目前沒有實驗數據支持該往哪個
+            # 方向調，貿然「修一致」風險自負。
             if pitch < 0:  # 向上看（在你的系統坐標系中，頭部向上為負值）
                 if yaw > 35: 
                     return "RIGHT_BACK_UPPER"
@@ -68,6 +77,8 @@ class GazeFSMManager:
                 
                 # 依據盲區前一影格的運動向量外推意圖
                 # 臨界條件：Yaw 偏航超過 35° 且 Pitch 呈現上揚趨勢
+                # （此處 last_pitch < 10 刻意比上方 FRONTAL 期間的 pitch < 0 寬鬆，
+                #  見上方 update() 開頭 pitch < 0 那行的註解說明）
                 if last_yaw > 35 and last_pitch < 10:
                     self.current_state = "EXTREME_TURNING"
                     self.gaze_target = "RIGHT_BACK_UPPER"
